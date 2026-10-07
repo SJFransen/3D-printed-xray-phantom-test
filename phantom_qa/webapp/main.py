@@ -1201,8 +1201,10 @@ def set_field_edge(aid: str, body: FieldEdgeSet, request: Request):
     entry = pipeline.to_jsonable({
         "side": body.side, "detected": True, "manual": True,
         "offset_from_edge_mm": offset,
-        "edge_pt_px": np.asarray(
-            ctx.T.mm_to_px(edge_pt + outward * offset)).tolist(),
+        # Keep the marker where the operator clicked. Only the measurement
+        # projects onto the side normal; projecting the marker discards its
+        # position along the edge and makes it jump to the side's centre.
+        "edge_pt_px": list(body.point_px),
     })
 
     def edit(geom):

@@ -152,17 +152,20 @@ def test_an_ROI_without_an_orientation_is_refused_cleanly(client, mod, aid):
 
 # ------------------------------------------------- the field edge is serialised
 
-def test_a_manual_field_edge_is_recorded(client, mod, aid):
+@pytest.mark.parametrize("side", ["top", "right", "bottom", "left"])
+def test_a_manual_field_edge_is_recorded(client, mod, aid, side):
     mod.store.mutate_geometry(
         aid, lambda g: g.__setitem__(
             "geometry", {"field_edges": {}, "rulers": {}}), action="test")
     r = client.post(f"/api/analyses/{aid}/field_edge",
-                    json={"side": "top", "point_px": [32.0, 2.0]})
+                    json={"side": side, "point_px": [11.0, 2.0]})
     assert r.status_code == 200, r.text
     assert r.json()["manual"] is True
     assert "history" in r.json(), "the edit is not undoable"
-    stored = mod.store.get(aid)["geometry"]["geometry"]["field_edges"]["top"]
+    assert r.json()["edge_pt_px"] == [11.0, 2.0]
+    stored = mod.store.get(aid)["geometry"]["geometry"]["field_edges"][side]
     assert stored["manual"] is True
+    assert stored["edge_pt_px"] == [11.0, 2.0]
 
 
 def test_a_field_edge_on_a_scan_without_geometry_is_a_400_not_a_500(client, mod,

@@ -360,11 +360,15 @@ def _wedge_section(res, bmap):
     rows = ""
     for i, r in enumerate(w["rows"]):
         b = bmap.get(("wedge", f"S{r['step']}", "mean"))
+        saturation_badge = (
+            '<span class="chip" style="background:#cf3f3f">saturated</span>'
+            if r.get("saturated") else ""
+        )
         rows += (f"<tr><td>S{r['step']}</td><td class='num'>{_num(r['mean'], 1)}</td>"
                  f"<td class='num'>{_num(r['std'], 1)}</td>"
                  f"<td class='num'>{_num(resid[i] if i < len(resid) else None, 1)}%</td>"
                  f"{_delta_cell(r['mean'], b)}"
-                 f"<td>{'<span class=\"chip\" style=\"background:#cf3f3f\">saturated</span>' if r.get('saturated') else ''}</td></tr>")
+                 f"<td>{saturation_badge}</td></tr>")
     chart = _chart_wedge(res)
     reasons = w.get("reasons") or []
     body = f"""

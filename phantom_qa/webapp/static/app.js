@@ -14,7 +14,7 @@ const S = {
   visible: { geometry: true, linepairs: true, lowcontrast: true,
              uniformity: true, wedge: true },
   labels: true, selectedRoi: null, mode: "normal", manualCorners: [],
-  fieldEdgeSide: null, dragRoi: null, dimPreview: null, lcCorners: [],
+  fieldEdgeSide: null, dragFieldEdge: null, dragRoi: null, dimPreview: null, lcCorners: [],
   pendingFile: null,
   /* measuring-point undo state, mirrored from the server after every edit */
   history: { seq: 0, undo_depth: 0, redo_depth: 0 },
@@ -30,7 +30,7 @@ function clearAnalysisState() {
   S.aid = null; S.record = null; S.reg = null; S.geometry = null;
   S.results = null; S.baseline = null; S.imgEl = null;
   S.selectedRoi = null; S.mode = "normal"; S.manualCorners = [];
-  S.fieldEdgeSide = null; S.dragRoi = null; S.dimPreview = null;
+  S.fieldEdgeSide = null; S.dragFieldEdge = null; S.dragRoi = null; S.dimPreview = null;
   S.lcCorners = []; S.pendingFile = null;
   S.history = { seq: 0, undo_depth: 0, redo_depth: 0 };
   S.layoutSource = ""; S.phantomProfile = null;
@@ -328,6 +328,11 @@ function draw() {
         ctx2d.moveTo(c[0] - 10, c[1]); ctx2d.lineTo(c[0] + 10, c[1]);
         ctx2d.moveTo(c[0], c[1] - 10); ctx2d.lineTo(c[0], c[1] + 10);
         ctx2d.stroke();
+        if (f.manual && showHandles && !signedOff()) {
+          ctx2d.beginPath();
+          ctx2d.arc(c[0], c[1], 6, 0, Math.PI * 2);
+          ctx2d.stroke();
+        }
         ctx2d.font = "11px Segoe UI"; ctx2d.fillStyle = COLORS.geometry;
         ctx2d.fillText(`field ${side}${f.manual ? " (manual)" : ""}`,
                        c[0] + 12, c[1] + 4);
@@ -359,6 +364,13 @@ canvas.addEventListener("mousedown", (ev) => {
   const pos = [ev.offsetX, ev.offsetY];
   if (S.mode === "corners" || S.mode === "fieldedge" || S.mode === "lccorners") return;
   if (S.stage === "C" && !signedOff()) {
+    const field = hitFieldEdge(pos);
+    if (field) {
+      S.dragFieldEdge = { ...field, start: pos,
+        original: field.edge.edge_pt_px.slice(), moved: false };
+      canvas.style.cursor = "grabbing";
+      return;
+    }
     const hit = hitRoi(pos);
     if (hit && hit.drag) {
       // Remember where the press started: a click that never moves must stay a
@@ -382,6 +394,18 @@ canvas.addEventListener("mousemove", (ev) => {
   const mm = pxToMm(nat);
   $("#cursor-mm").textContent = mm
     ? `x ${mm[0].toFixed(1)} mm  y ${mm[1].toFixed(1)} mm` : "";
+  if (S.dragFieldEdge) {
+    const drag = S.dragFieldEdge;
+    if (Math.hypot(pos[0] - drag.start[0], pos[1] - drag.start[1]) > 3)
+      drag.moved = true;
+    if (drag.moved) {
+      const start = scr2nat(drag.start);
+      drag.edge.edge_pt_px = [drag.original[0] + nat[0] - start[0],
+                             drag.original[1] + nat[1] - start[1]];
+      draw();
+    }
+    return;
+  }
   if (S.dragRoi) {
     if (S.dragStart && Math.hypot(pos[0] - S.dragStart[0],
                                   pos[1] - S.dragStart[1]) > 3) {
@@ -402,6 +426,15 @@ canvas.addEventListener("mousemove", (ev) => {
 canvas.addEventListener("mouseup", async (ev) => {
   canvas.style.cursor = "grab";
   const pos = [ev.offsetX, ev.offsetY];
+  if (S.dragFieldEdge) {
+    const drag = S.dragFieldEdge;
+    S.dragFieldEdge = null;
+    if (drag.moved) {
+      const saved = await submitFieldEdge(drag.edge.edge_pt_px, drag.side);
+      if (!saved) { drag.edge.edge_pt_px = drag.original; draw(); }
+    }
+    return;
+  }
   if (S.mode === "corners") {
     S.manualCorners.push(scr2nat(pos));
     draw();
@@ -468,6 +501,14 @@ canvas.addEventListener("mouseup", async (ev) => {
     }
   }
 });
+canvas.addEventListener("mouseleave", () => {
+  if (S.dragFieldEdge) {
+    S.dragFieldEdge.edge.edge_pt_px = S.dragFieldEdge.original;
+    S.dragFieldEdge = null;
+    canvas.style.cursor = "grab";
+    draw();
+  }
+});
 canvas.addEventListener("wheel", (ev) => {
   ev.preventDefault();
   const f = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
@@ -477,6 +518,17 @@ canvas.addEventListener("wheel", (ev) => {
   S.view.k *= f;
   draw();
 }, { passive: false });
+
+function hitFieldEdge(screenPos) {
+  let best = null, bestD = 14;
+  Object.entries(S.geometry?.geometry?.field_edges || {}).forEach(([side, edge]) => {
+    if (!edge.manual || !edge.edge_pt_px) return;
+    const c = nat2scr(edge.edge_pt_px);
+    const d = Math.hypot(c[0] - screenPos[0], c[1] - screenPos[1]);
+    if (d < bestD) { bestD = d; best = { side, edge }; }
+  });
+  return best;
+}
 
 function hitRoi(screenPos) {
   const items = activeRois().filter(i => i.drag && i.roi.center_px);
@@ -1823,17 +1875,18 @@ async function resetGeometry(to) {
   } catch (e) { status("Reset refused: " + e.message, true); }
 }
 
-async function submitFieldEdge(natPoint) {
+async function submitFieldEdge(natPoint, side = S.fieldEdgeSide) {
   S.mode = "normal";
   try {
     const f = await postJSON(`api/analyses/${S.aid}/field_edge`,
-      { side: S.fieldEdgeSide, point_px: natPoint });
-    S.geometry.geometry.field_edges[S.fieldEdgeSide] = f;
+      { side, point_px: natPoint });
+    S.geometry.geometry.field_edges[side] = f;
     noteHistory(f);
-    status(`Field edge ${S.fieldEdgeSide} set (${fmt(f.offset_from_edge_mm, 1)} mm outside phantom edge).`);
+    status(`Field edge ${side} set (${fmt(f.offset_from_edge_mm, 1)} mm outside phantom edge).`);
     draw();
-  } catch (e) { status("Failed: " + e.message, true); }
-  S.fieldEdgeSide = null;
+    return true;
+  } catch (e) { status("Failed: " + e.message, true); return false; }
+  finally { S.fieldEdgeSide = null; }
 }
 
 /* ---- Stage D ---- */
