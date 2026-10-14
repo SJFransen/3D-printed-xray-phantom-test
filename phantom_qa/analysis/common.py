@@ -23,6 +23,7 @@ class Ctx:
     pdef: PhantomDef
     reg: Registration | None = None
     params: dict | None = None
+    templates: dict | None = None
 
     def param(self, key, default=None):
         return (self.params or {}).get(key, default)

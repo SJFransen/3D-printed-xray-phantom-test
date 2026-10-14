@@ -13,22 +13,23 @@ from scipy import ndimage
 
 from ..features import linear_fit_r2, parabolic_refine, sample_profile
 from .common import Ctx, rect_roi, segment, stats_for_roi
+from .positioning import (OutlineMatcher, project, rectangle_outline, rotation,
+                          template_for)
 
 
-def _refine_axis(ctx: Ctx):
+def _refine_axis(ctx: Ctx, center, angle_deg):
     """Refine the wedge column x-center (via the dark frame minima) and the step
     boundary y-positions (via gradient peaks along the wedge axis)."""
     T = ctx.T
     w = ctx.pdef.wedge
-    cx = w["center_x_mm"]
-    y_top, y_bot = w["y_top_mm"], w["y_bottom_mm"]
+    nominal_cy = (w["y_top_mm"] + w["y_bottom_mm"]) / 2.0
+    y_top, y_bot = w["y_top_mm"] - nominal_cy, w["y_bottom_mm"] - nominal_cy
     n_steps = len(w["steps"])
 
     # --- x-center: horizontal profile at three heights, dark frame minima
     xs_found = []
     for y in (0.25 * y_top, 0.0, 0.25 * y_bot):
-        p0 = T.mm_to_px([cx - 16, y])
-        p1 = T.mm_to_px([cx + 16, y])
+        p0, p1 = T.mm_to_px(project([[-16, y], [16, y]], center, angle_deg))
         ts, vals = sample_profile(ctx.pixels, p0, p1, 224, avg_half_width=6, n_avg=5)
         half = len(vals) // 2
         il = int(np.argmin(vals[:half]))
@@ -37,12 +38,15 @@ def _refine_axis(ctx: Ctx):
         u = (np.asarray(p1, float) - np.asarray(p0, float))
         u /= np.linalg.norm(u)
         pt = np.asarray(p0, float) + mid_t * u
-        xs_found.append(float(T.px_to_mm(pt)[0]))
-    cx_ref = float(np.median(xs_found))
+        relative = (T.px_to_mm(pt) - center) @ rotation(angle_deg)
+        xs_found.append(float(relative[0]))
+    dx = float(np.median(xs_found))
+    if abs(dx) > 4.0:
+        raise ValueError("wedge frame disagrees with the structural template")
+    center = np.asarray(center) + rotation(angle_deg) @ [dx, 0.0]
 
     # --- step boundaries along the wedge axis
-    p0 = T.mm_to_px([cx_ref, y_top + 6])
-    p1 = T.mm_to_px([cx_ref, y_bot - 6])
+    p0, p1 = T.mm_to_px(project([[0, y_top + 6], [0, y_bot - 6]], center, angle_deg))
     n = int(abs(y_top - y_bot + 12) * T.px_per_mm)
     ts, vals = sample_profile(ctx.pixels, p0, p1, n, avg_half_width=4 * T.px_per_mm / 2,
                               n_avg=7)
@@ -61,17 +65,40 @@ def _refine_axis(ctx: Ctx):
         i0 = int(max(0, i_exp - half_mm * samples_per_mm))
         i1 = int(min(len(grad) - 1, i_exp + half_mm * samples_per_mm))
         i = i0 + int(np.argmax(grad[i0:i1 + 1]))
+        if grad[i] <= 1.5 * max(float(np.median(grad[i0:i1 + 1])), 1e-9):
+            raise ValueError("wedge boundary has insufficient gradient evidence")
         return float(y_of_index(parabolic_refine(grad, i)))
 
     # ends first (strong edges), then interior boundaries near their nominals
     y_top_ref = refine_near(y_top, 3.0)
     y_bot_ref = refine_near(y_bot, 3.0)
     nominal_bounds = w.get("nominal_boundaries_y_mm")
+    if nominal_bounds:
+        nominal_bounds = [y - nominal_cy for y in nominal_bounds]
     if not nominal_bounds:
         step_mm = (y_top_ref - y_bot_ref) / n_steps
         nominal_bounds = [y_top_ref - k * step_mm for k in range(1, n_steps)]
     boundaries = [refine_near(y, 3.0) for y in nominal_bounds]
-    return cx_ref, y_top_ref, y_bot_ref, boundaries
+    if np.any(np.diff([y_top_ref, *boundaries, y_bot_ref]) >= -2.0):
+        raise ValueError("wedge boundaries are not ordered")
+    return center, y_top_ref, y_bot_ref, boundaries
+
+
+def _position_frame(ctx):
+    w = ctx.pdef.wedge
+    template = template_for(ctx, "wedge/frame")
+    points, normals, sections = rectangle_outline(template["size_mm"])
+    cy = template["center_mm"][1]
+    bounds = w.get("nominal_boundaries_y_mm")
+    if not bounds:
+        bounds = np.linspace(w["y_top_mm"], w["y_bottom_mm"], len(w["steps"]) + 1)[1:-1]
+    for k, y in enumerate(bounds):
+        xs = np.linspace(-w.get("roi_w_mm", 10.0) / 2, w.get("roi_w_mm", 10.0) / 2, 21)
+        points = np.vstack([points, np.c_[xs, np.full(len(xs), y - cy)]])
+        normals = np.vstack([normals, np.tile([0, 1], (len(xs), 1))])
+        sections = np.r_[sections, np.full(len(xs), 4 + k)]
+    matcher = OutlineMatcher(ctx, template, points, normals, sections, "edge")
+    return matcher.fit(template, required_sections=5)
 
 
 def _full_scale(ctx: Ctx) -> float:
@@ -95,13 +122,31 @@ def propose(ctx: Ctx) -> dict:
     n_steps = len(w["steps"])
     y_top, y_bot = w["y_top_mm"], w["y_bottom_mm"]
     step_mm = (y_top - y_bot) / n_steps
+    template = template_for(ctx, "wedge/frame")
+    positioning = _position_frame(ctx)
+    angle = positioning["angle_deg"]
     try:
-        cx_ref, y_top_ref, y_bot_ref, boundaries = _refine_axis(ctx)
+        if not positioning["accepted"]:
+            raise ValueError(positioning["reason"])
+        center, y_top_ref, y_bot_ref, boundaries = _refine_axis(
+            ctx, positioning["center_mm"], angle)
+        if np.linalg.norm(center - template["center_mm"]) > template["search_mm"]:
+            raise ValueError("refined wedge frame lies outside the local search mask")
+        positioning["refined_center_mm"] = center.tolist()
         detected = True
-    except Exception:
-        cx_ref = w["center_x_mm"]
-        y_top_ref, y_bot_ref = y_top, y_bot
-        boundaries = [y_top - k * step_mm for k in range(1, n_steps)]
+    except ValueError as exc:
+        center = np.array(template["center_mm"])
+        angle = 0.0
+        cy = center[1]
+        y_top_ref, y_bot_ref = y_top - cy, y_bot - cy
+        boundaries = [y - cy for y in w.get("nominal_boundaries_y_mm", [])]
+        if not boundaries:
+            boundaries = [y_top_ref - k * step_mm for k in range(1, n_steps)]
+        positioning["accepted"] = False
+        positioning["reason"] = str(exc)
+        positioning["center_mm"] = center.tolist()
+        positioning["angle_deg"] = angle
+        positioning["shift_mm"] = 0.0
         detected = False
 
     edges = [y_top_ref] + boundaries + [y_bot_ref]
@@ -119,13 +164,19 @@ def propose(ctx: Ctx) -> dict:
             "step": st["step"],
             "step_height_mm": float(step_h),
             "fits": bool(step_h >= roi_h + 2.0),
-            "roi": rect_roi(ctx, (cx_ref, yc), (roi_w, roi_h), 0.0,
+            "roi": rect_roi(ctx, project([[0, yc]], center, angle)[0], (roi_w, roi_h), angle,
                             roi_id=f"wedge/S{st['step']}"),
         })
-    axis = segment(ctx, (cx_ref, y_top_ref + 4), (cx_ref, y_bot_ref - 4),
+    ends = project([[0, y_top_ref + 4], [0, y_bot_ref - 4]], center, angle)
+    axis = segment(ctx, ends[0], ends[1],
                    "wedge/axis")
-    return {"center_x_mm": cx_ref, "boundaries_y_mm": boundaries,
-            "y_top_mm": y_top_ref, "y_bottom_mm": y_bot_ref,
+    # Legacy scalar coordinates remain in the phantom frame. ROI/axis geometry
+    # carries the full rotated pose, also when saved as a confirmed layout.
+    boundary_points = project([[0, y] for y in edges], center, angle)
+    return {"center_x_mm": float(center[0]), "angle_deg": float(angle),
+            "boundaries_y_mm": boundary_points[1:-1, 1].tolist(),
+            "y_top_mm": float(boundary_points[0, 1]),
+            "y_bottom_mm": float(boundary_points[-1, 1]), "positioning": positioning,
             "detected": detected, "steps": steps, "axis": axis,
             "roi_size_mm": [roi_w, roi_h]}
 

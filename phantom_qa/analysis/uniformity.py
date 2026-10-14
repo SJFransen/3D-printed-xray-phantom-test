@@ -10,21 +10,24 @@ import numpy as np
 
 from ..features import locate_line_center
 from .common import Ctx, rect_roi, stats_for_roi
+from .positioning import OutlineMatcher, rectangle_outline, rotation, template_for
 
 
-def _refine_square(ctx: Ctx, center_mm, size_mm: float):
+def _refine_square(ctx: Ctx, center_mm, size_mm: float, angle_deg=0.0):
     """Locate the 4 outline lines of a printed square and return the refined
     center (mm) plus measured size, or None if detection is too weak."""
     T = ctx.T
     ppm = T.px_per_mm
     half = size_mm / 2.0
+    R = rotation(angle_deg)
     found = {}
     # (key, axis unit vector along which the line position varies, sample offsets axis)
     for key, line_pos, axis in (("left", (-half, 0), (1, 0)),
                                 ("right", (half, 0), (1, 0)),
                                 ("bottom", (0, -half), (0, 1)),
                                 ("top", (0, half), (0, 1))):
-        axis = np.asarray(axis, float)
+        line_pos = R @ np.asarray(line_pos, float)
+        axis = R @ np.asarray(axis, float)
         perp = np.array([-axis[1], axis[0]])
         d_px = T.mm_to_px(axis) - T.mm_to_px([0, 0])
         d_px = d_px / np.linalg.norm(d_px)
@@ -44,10 +47,11 @@ def _refine_square(ctx: Ctx, center_mm, size_mm: float):
             found[key] = float(np.median(positions))
     if not all(k in found for k in ("left", "right", "top", "bottom")):
         return None
-    cx = center_mm[0] + (found["left"] + found["right"]) / 2.0
-    cy = center_mm[1] + (found["bottom"] + found["top"]) / 2.0
+    center = np.asarray(center_mm) + R @ np.array([
+        (found["left"] + found["right"]) / 2.0,
+        (found["bottom"] + found["top"]) / 2.0])
     return {
-        "center_mm": [float(cx), float(cy)],
+        "center_mm": center.tolist(), "angle_deg": float(angle_deg),
         "measured_w_mm": float(found["right"] - found["left"]),
         "measured_h_mm": float(found["top"] - found["bottom"]),
     }
@@ -58,14 +62,29 @@ def propose(ctx: Ctx) -> dict:
     roi_size = u.get("roi_size_mm", 30.0)
     squares = []
     for sq in u["squares"]:
-        refined = _refine_square(ctx, sq["center_mm"], u["size_mm"])
+        template = template_for(ctx, "uniformity/" + sq["id"])
+        points, normals, sections = rectangle_outline(template["size_mm"])
+        matcher = OutlineMatcher(ctx, template, points, normals, sections)
+        positioning = matcher.fit(template, required_sections=4)
+        refined = (_refine_square(ctx, positioning["center_mm"], u["size_mm"],
+                                  positioning["angle_deg"])
+                   if positioning["accepted"] else None)
+        if refined and np.linalg.norm(np.asarray(refined["center_mm"]) - sq["center_mm"]) > template["search_mm"]:
+            refined = None
+        if not refined:
+            positioning["accepted"] = False
+            positioning["reason"] = "square outlines could not be verified inside the local mask"
+        else:
+            positioning["refined_center_mm"] = refined["center_mm"]
         center = refined["center_mm"] if refined else sq["center_mm"]
+        angle = positioning["angle_deg"] if refined else 0.0
         entry = {
             "id": sq["id"],
             "nominal_center_mm": sq["center_mm"],
             "detected": refined is not None,
             "outline": refined,
-            "roi": rect_roi(ctx, center, (roi_size, roi_size), 0.0,
+            "positioning": positioning,
+            "roi": rect_roi(ctx, center, (roi_size, roi_size), angle,
                             roi_id=f"uniformity/{sq['id']}"),
         }
         squares.append(entry)

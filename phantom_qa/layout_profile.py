@@ -66,7 +66,7 @@ _SCALARS = {
     "linepairs": ("strip_angle_deg", "roi_size_mm", "roi_angle_offset_deg"),
     "uniformity": ("roi_size_mm",),
     "wedge": ("center_x_mm", "y_top_mm", "y_bottom_mm", "boundaries_y_mm",
-              "roi_size_mm"),
+              "roi_size_mm", "angle_deg"),
 }
 
 #: Objects whose position changes under a wrong 90/180-degree registration.
@@ -145,8 +145,8 @@ def extract_layout(geometry: dict, *, pdef_name: str = "",
 
     Every ROI is captured, not only the hand-moved ones. The automatic
     proposal already varies by up to a millimetre between scans of one phantom
-    (the low-contrast grid search snaps to a 0.5 mm lattice, the wedge axis
-    refinement scatters by ~1 mm), so freezing the confirmed positions makes
+    (coarse-to-fine placement ends at a 0.25 mm search increment and the
+    wedge boundary measurements also vary with image noise), so freezing the confirmed positions makes
     successive scans of a phantom directly comparable rather than merely
     re-detected. ``manually_adjusted`` is kept per ROI because it changes what
     ``compute`` does: a line-pair profile segment without it has its direction

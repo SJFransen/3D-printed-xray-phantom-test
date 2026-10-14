@@ -10,6 +10,43 @@ value means more attenuation, so the phantom is bright and direct exposure dark.
 
 ---
 
+## Template positioning — `analysis/positioning.py` (algorithm 1.1)
+
+After phantom registration, the complete feature layout is projected from the
+definition into image coordinates. Each feature receives a starting pose and a
+bounded search mask. The local models preserve dimensions and spacing; only
+translation and rotation are fitted. Radiation-field edges remain independent
+of the phantom layout, and ruler pitch/dimensions retain their existing
+measurement path and scale.
+
+A coarse grid searches each permitted pose range. Local iterations then use
+translation steps of 2, 1, 0.5 and 0.25 mm and rotation steps of 2, 1, 0.5 and
+0.25 degrees, with at most 12 iterations per level. Each level stops when no
+neighbour improves the score. Outline matching uses progressively less
+smoothing (1, 0.7, 0.45 and 0.25 mm) on a rectified local image. These are search
+increments, not a claim of positioning accuracy.
+
+Scores balance noise-normalised responses across structural outline sections.
+No QA ROI SD, CNR, dimension deviation or pitch deviation is maximised. The
+line-pair strip and low-contrast grid are aligned as groups before their smaller
+local corrections. Weak, clipped and search-boundary outline fits retain the
+template and report `detected: false`; diagnostics record scores, candidate
+poses, iteration counts and the fallback reason. Scores without image evidence
+are stored as JSON null rather than non-finite numbers.
+
+Search radii and angle limits live in the feature sections of the phantom JSON:
+uniformity 8 mm / 8 degrees, low contrast 15 mm / 25 degrees, line-pair strip
+28 mm / 15 degrees, and wedge 12 mm / 8 degrees. The wedge's approximate
+`frame_width_mm` (20 mm) describes structural support, not a reported width.
+Confirmed layouts and manual edits continue to override proposals; computation
+does not rerun this pose optimiser.
+
+Synthetic ground-truth checks cover displaced/rotated features, a mirrored
+registered frame, weak/absent circles, missing line groups, bounded/clipped
+searches, manual edits, saved layouts and preservation of a real pitch error.
+Run them with `python -m unittest discover -s tests -p test_positioning.py -v`
+or the normal pytest suite.
+
 ## 1. Ingest and normalisation — `ingest.py`
 
 - DICOM pixel data is decoded losslessly (pylibjpeg for JPEG-Lossless), the
@@ -140,38 +177,32 @@ enhancement. Pitch and mark-to-mark metrics do not.
 Block positions are **measured in every scan**; the phantom definition supplies
 nominal seeds only.
 
-**Periodicity map.** Local variance cannot be used to find the groups: the dark
-wedge steps carry far more quantum noise than the tungsten patterns carry
-signal, so a variance detector locks onto the wedge. Noise is broadband and a
-printed grating is a sharp spectral peak, so the discriminator is the
-**peak-to-median energy ratio in the 1.0–2.4 mm⁻¹ band**, computed on 10 mm
-windows at 2 mm stride over a corridor around the nominal strip. Blobs with a
-ratio above 12 are candidates.
+**Periodicity map.** A 10 mm FFT window at 2 mm stride measures the
+peak-to-median spectral ratio in the 1.0–2.4 lp/mm band. The registered template
+defines the corridor. Ratios above 12 provide structural support; directions
+inconsistent with the strip's permitted orientation are suppressed. The row
+axis runs along decreasing phantom y, so its Fourier direction is sign-flipped
+when expressed in phantom coordinates.
 
-**Impostor rejection.** Uniformity-square outlines, ruler marks and the wedge
-frame also produce peaks in that band. The real groups all lie on one strip, so
-they share a modulation direction (circular median, ±12° kept) and are collinear
-(MAD-based rejection about the fitted centre line). Both conditions must hold.
+**Strip alignment.** The complete set of expected block centres is translated
+and rotated together over this map using the shared coarse-to-fine optimiser.
+At least three supported centres are required for the default five-group strip.
+This avoids merging adjacent groups into one connected component through their
+printed frame. Each aligned template centre then seeds a distinct 5 mm local
+refinement region.
 
-**Angle convention.** The rectified corridor's row index runs along *decreasing*
-phantom y, so the row-axis FFT frequency is the negative of the phantom-y
-frequency. The sign is flipped when converting to phantom coordinates; without
-it every measured angle is mirrored about the x axis, which is invisible at
-exactly 45° but a ~5° error elsewhere.
+**Local centring.** A native-image 2-D FFT measures each block's frequency and
+modulation direction. Directional demodulation at that measured carrier
+frequency produces a narrow-band energy envelope, suppressing the broadband
+frame. Its centre of mass is refined with progressively smaller bounded moves
+(2 → 1 → 0.5 → 0.25 mm), stopping below 0.05 mm movement, after 16 updates, or
+before leaving the 5 mm local mask. The strip axis is finally fitted through
+the measured block centres, independently of the printed-line direction.
 
-**Strip axis** is fitted through the detected block centres rather than derived
-from the modulation direction, so no assumption is needed about whether the
-printed lines run along or across the strip.
-
-**Sub-window centring.** The periodicity grid is coarse, so each centre is
-refined by band-passing the region at that block's own measured frequency and
-taking an iterated, isotropic energy centre of mass over a disc. A box filter is
-not used, because it biases a block rotated ~45° to the sampling grid.
-
-**Identity assignment.** Blocks are ordered along the strip and matched to the
-definition's groups, validated by correlating measured against nominal
-frequency. A block whose frequency contradicts its assigned identity is dropped
-rather than reported.
+**Identity assignment.** Ordered subsets are matched by measured frequency,
+including missing groups and reversed frequency order. A match more than
+0.35 lp/mm from its nominal identity is rejected. Nominal frequency identifies
+the block; it does not fix the measured line pitch.
 
 **SD metric.** Standard deviation inside the 12.6 × 12.6 mm ROI — the guide's
 constancy metric. The ROI is placed at `roi_angle_offset_deg` (45°) to the strip
@@ -197,20 +228,20 @@ then least-squares fitted with one MAD-based outlier pass.
 Reported: measured pitch and lp/mm, deviation against nominal, per-line
 residuals in micrometres and their RMS, and the raw profile for plotting.
 
-> Across all six reference scans the pitch deviations are stable to about 0.1 %:
+> With algorithm 1.0, across all six reference scans the pitch deviations are stable to about 0.1 %:
 > +0.8 %, −2.0 %, +1.4 %, −2.4 %, +1.9 % for 2.0/1.6/1.4/1.2/1.1 lp/mm. This is
 > reproducible print geometry, not measurement noise.
 
 ## 6. Low contrast — `analysis/lowcontrast.py`
 
-- Block centre and angle come from the smoothed bright blob (PCA of the pixel
-  covariance, angle snapped to the nominal −45° ± 25°).
-- The rigid 4 × 2 circle grid is shifted by the median offset of the three
-  strongest matched-filter responses (dark disc: annulus mean − disc mean, ±2.5
-  mm search).
-- Per circle: an object ROI of Ø 7 mm, and a background **annulus around that
-  same circle** (Ø 12 → 16 mm). A concentric ring is local to its own object and
-  cannot collide with a neighbour or pick up the block's brightness gradient.
+- The projected block outline is fitted for centre and angle using the shared
+  structural matcher, preserving the fixed block dimensions.
+- Circle rims are then fitted as one rigid grid, with at most 2.5 mm translation
+  and 4 degrees rotation relative to the block pose. At least three circles must
+  provide coherent rim evidence; invisible circles inherit the common pose.
+  The grid correction uses edge alignment rather than maximising circle CNR.
+- Per circle: an object ROI of Ø 7 mm and a concentric background annulus
+  (Ø 12 → 16 mm), keeping every background tied to its own object.
 
 `CNR = (μ_obj − μ_bg) / √(σ_obj² + σ_bg²)` — the guide's formula, signed;
 circles are darker, so values are negative.
@@ -225,19 +256,22 @@ claimed. A sanity check warns if |CNR| does not broadly increase with level.
 
 ## 7. Uniformity — `analysis/uniformity.py`
 
-Square outlines are re-detected per scan using three line-centre probes per side
-of each square, taking the median. The ROI is 30 × 30 mm centred in each square.
+Each square's projected outline is refined for translation and rotation. Three
+line-centre probes per side then verify the outline and measure its dimensions;
+opposing edges determine the final centre. The 30 × 30 mm ROI follows the fitted
+angle. Neither outline dimensions nor the QA ROI size are optimisation variables.
 
 `SNR = μ / σ` and `ΔSNRᵢ = (SNRᵢ − SNR_avg) / SNR_avg`; the test passes if
 |ΔSNRᵢ| ≤ 20 %.
 
 ## 8. Wedge — `analysis/wedge.py`
 
-- The x-centre comes from the dark frame minima at three heights, taking the
-  median. Step boundaries come from gradient-magnitude peaks along the wedge
-  axis, each searched ±3 mm around the measured boundaries stored in the
-  definition. The steps are about 19 mm with a ~26 mm bottom step; these are
-  measured, not assumed.
+- The wedge frame and expected step boundaries are first aligned as one rigid
+  template. Dark frame minima at three heights refine its transverse centre;
+  gradient peaks within ±3 mm locate individual boundaries along its rotated
+  axis. Boundaries must have local gradient evidence and remain ordered.
+  Unequal step heights are measured, not replaced with an equal-spacing grid.
+  Failed verification retains the nominal boundaries and reports no detection.
 - Step ROIs are a **fixed** `roi_w_mm` × `roi_h_mm` (10 × 10 mm) centred in
   every step. The printed steps are not equal heights, so sizing each ROI to its
   own step would average a different area per step and make the same step

@@ -101,6 +101,8 @@
     "type": "outline_corners"
   },
   "uniformity": {
+    "search_mm": 8.0,
+    "angle_limit_deg": 8.0,
     "size_mm": 50.1,
     "roi_size_mm": 30.0,
     "squares": [
@@ -142,6 +144,7 @@
     ]
   },
   "linepairs": {
+    "angle_limit_deg": 15.0,
     "strip_angle_deg": 44.1,
     "roi_size_mm": 12.6,
     "search_pad_mm": 28.0,
@@ -190,6 +193,8 @@
     "roi_angle_offset_deg": 45.0
   },
   "lowcontrast": {
+    "search_mm": 15.0,
+    "angle_limit_deg": 25.0,
     "center_mm": [
       -45.86,
       -48.62
@@ -255,6 +260,9 @@
     ]
   },
   "wedge": {
+    "search_mm": 12.0,
+    "angle_limit_deg": 8.0,
+    "frame_width_mm": 20.0,
     "center_x_mm": 49.8,
     "y_top_mm": 69.4,
     "y_bottom_mm": -70.2,

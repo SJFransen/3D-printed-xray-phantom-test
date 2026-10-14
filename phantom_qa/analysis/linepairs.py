@@ -12,6 +12,7 @@ from scipy import ndimage
 
 from ..features import (centroid_peak, find_peaks_1d, sample_profile)
 from .common import Ctx, rect_roi, segment, stats_for_roi
+from .positioning import STEPS_MM, project, refine_pose, rotation, template_for
 
 
 _RECT_STEP_MM = 0.25          # sampling of the local rectified corridor
@@ -82,23 +83,32 @@ def _refine_center_fine(img, x0, y0, step, center_mm, freq_lp_mm, angle_deg,
                         block_mm, search_mm=5.0):
     """Sub-window refinement of a block centre.
 
-    The periodicity map is computed on a coarse stride with a window comparable
-    to the block itself, so its centroid is only good to ~1 mm. Here the
-    rectified region is band-passed around the block's own measured frequency
-    and the resulting pattern energy is box-filtered at the block size; the peak
-    of that is the block centre to a fraction of a millimetre."""
+    The strip template supplies the coarse centre. Demodulation at the block's
+    measured frequency and modulation direction produces a pattern envelope;
+    its iterated centre of mass supplies the local correction."""
+    # A directional narrow-band envelope suppresses the broadband printed
+    # frame. An isotropic bandpass can give that frame more energy than a weak
+    # grating and consequently pull the centre onto the outline.
     pitch = 1.0 / max(freq_lp_mm, 1e-6)
-    s1 = max(pitch / 4.0 / step, 0.6)
-    s2 = max(pitch / 1.2 / step, s1 + 0.6)
-    bp = ndimage.gaussian_filter(img, s1) - ndimage.gaussian_filter(img, s2)
-    energy = ndimage.gaussian_filter(bp * bp, max(pitch / step, 1.0))
+    yy, xx = np.indices(img.shape)
+    a = np.deg2rad(angle_deg)
+    phase = 2 * np.pi * freq_lp_mm * (xx * step * np.cos(a) - yy * step * np.sin(a))
+    detrended = img - ndimage.gaussian_filter(img, max(2 * pitch / step, 1.0))
+    carrier = detrended * np.exp(-1j * phase)
+    sigma = max(1.5 * pitch / step, 1.0)
+    envelope = (ndimage.gaussian_filter(carrier.real, sigma)
+                + 1j * ndimage.gaussian_filter(carrier.imag, sigma))
+    energy = np.abs(envelope) ** 2
+    energy = np.maximum(energy - ndimage.gaussian_filter(energy, block_mm / step), 0.0)
 
     # Isotropic, iterated centre of mass. A box/uniform filter would bias the
     # result for a block rotated ~45 deg to the sampling grid; a disc does not.
     rad = block_mm / 2.0
     cur = [float(center_mm[0]), float(center_mm[1])]
     h, w = energy.shape
-    for _ in range(4):
+    # Large centre-of-mass corrections first, then progressively smaller
+    # bounded corrections. This refines pattern support, never the QA SD.
+    for max_move in np.repeat(STEPS_MM, 4):
         cj = (cur[0] - x0) / step
         ci = (y0 - cur[1]) / step
         r = int(round(rad / step))
@@ -117,6 +127,8 @@ def _refine_center_fine(img, x0, y0, step, center_mm, freq_lp_mm, angle_deg,
         cj_f = float((jj * wv).sum() / tot)
         new = [float(x0 + cj_f * step), float(y0 - ci_f * step)]
         moved = np.hypot(new[0] - cur[0], new[1] - cur[1])
+        if moved > max_move:
+            new = (np.asarray(cur) + (np.asarray(new) - cur) * max_move / moved).tolist()
         # never wander outside the coarse search radius
         if np.hypot(new[0] - center_mm[0], new[1] - center_mm[1]) > search_mm:
             return cur
@@ -140,149 +152,119 @@ def _axis_through(blocks):
 
 
 def detect_line_blocks(ctx: Ctx, ratio_threshold: float = 12.0):
-    """Locate the line-pair blocks by measurement rather than by stored position.
+    """Align the strip template, then refine each block in its own local mask.
 
-    Returns a list of dicts (measured_center_mm, freq_lp_mm, mod_dir_deg,
-    n_windows) ordered along the strip, plus the fitted strip angle."""
+    Whole-strip connected components can merge neighbouring groups through the
+    printed frame. Here a shared rigid pose preserves their approximate spacing
+    and gives every group a distinct, small search region before fine centring.
+    """
     lp = ctx.pdef.linepairs
+    template = template_for(ctx, "linepairs/strip")
     nominal = np.array([g["center_mm"] for g in lp["groups"]], float)
-    pad = lp.get("search_pad_mm", 28.0)
-    x_range = (nominal[:, 0].min() - pad, nominal[:, 0].max() + pad)
-    y_range = (nominal[:, 1].min() - pad, nominal[:, 1].max() + pad)
-    img, x0, y0, step = _rectify_region(ctx, x_range, y_range)
+    pad = template["search_mm"] + lp["roi_size_mm"]
+    img, x0, y0, step = _rectify_region(
+        ctx, (nominal[:, 0].min() - pad, nominal[:, 0].max() + pad),
+        (nominal[:, 1].min() - pad, nominal[:, 1].max() + pad))
     ratio, freq, ang, w, st = _periodicity_map(img, step)
+    if not ratio.size or np.max(ratio) <= ratio_threshold:
+        return [], None
 
-    mask = ratio > ratio_threshold
-    mask = ndimage.binary_opening(mask, np.ones((2, 2)))
-    lab, nl = ndimage.label(mask)
+    # Axis-aligned isolated frame/ruler lines are not diagonal gratings. The
+    # orientation allowance follows the strip template's permitted rotation.
+    base_angle = template["angle_deg"]
+    d = np.abs((ang - base_angle + 90) % 180 - 90)
+    orientation_ok = np.minimum(d, 90 - d) <= template["angle_limit_deg"] + 12
+    response = np.log1p(np.maximum(ratio - ratio_threshold, 0)) * orientation_ok
+    maps = [ndimage.gaussian_filter(response, sigma) for sigma in (0.8, 0.5, 0.25, 0.0)]
+
+    def sample(array, centers):
+        centers = np.atleast_2d(centers)
+        coords = [((y0 - centers[:, 1]) / step - w / 2) / st,
+                  ((centers[:, 0] - x0) / step - w / 2) / st]
+        return ndimage.map_coordinates(array, coords, order=1, mode="constant", cval=0.0)
+
+    local = (nominal - template["center_mm"]) @ rotation(base_angle)
+
+    def group_score(center, angle, level):
+        values = sample(maps[level], project(local, center, angle))
+        return float(np.mean(values))
+
+    positioning = refine_pose(group_score, template["center_mm"], base_angle,
+                              search_mm=template["search_mm"],
+                              angle_limit_deg=template["angle_limit_deg"])
+    predicted = project(local, positioning["center_mm"], positioning["angle_deg"])
+    support = sample(response, predicted)
+    positioning["accepted"] = bool(np.count_nonzero(support > 0.5) >= min(3, len(nominal))
+                                    and not positioning["at_bound"])
+    if not positioning["accepted"]:
+        return [], None
+
     blocks = []
-    for k in range(1, nl + 1):
-        sel = lab == k
-        if sel.sum() < 4:
+    block_mm = lp.get("roi_size_mm", 12.6)
+    strip_angle = positioning["angle_deg"] % 180.0
+    u = rotation(strip_angle)[:, 0]
+    for expected in predicted:
+        center = expected.tolist()
+        if sample(response, center)[0] <= 0.5:
             continue
-        wgt = ratio * sel
-        ii, jj = np.nonzero(sel)
-        # periodicity-weighted centroid of the window centres
-        wv = wgt[ii, jj]
-        ci = float(np.sum(ii * wv) / np.sum(wv))
-        cj = float(np.sum(jj * wv) / np.sum(wv))
-        cx = x0 + (cj * st + w / 2.0) * step
-        cy = y0 - (ci * st + w / 2.0) * step
-        f_med = float(np.median(freq[ii, jj]))
-        # circular median of the modulation direction (mod 180)
-        a2 = np.deg2rad(ang[ii, jj] * 2.0)
-        a_med = float((np.degrees(np.arctan2(np.sin(a2).mean(),
-                                             np.cos(a2).mean())) / 2.0) % 180.0)
-        blocks.append({"center_mm": [cx, cy], "freq_lp_mm": f_med,
-                       "mod_dir_deg": a_med, "n_windows": int(sel.sum())})
-
-    if len(blocks) < 2:
-        return blocks, None
-
-    # --- reject impostors -------------------------------------------------
-    # Uniformity-square outlines, ruler marks and the wedge frame also produce
-    # spectral peaks in the band, but they are axis-aligned one-offs. The real
-    # groups all live on ONE strip, so they share a modulation direction and are
-    # collinear. Both facts are used to filter.
-    def circ_median(angles, weights):
-        a2 = np.deg2rad(np.asarray(angles, float) * 2.0)
-        w = np.asarray(weights, float)
-        return (np.degrees(np.arctan2((np.sin(a2) * w).sum(),
-                                      (np.cos(a2) * w).sum())) / 2.0) % 180.0
-
-    def ang_diff(a, b):
-        d = abs((a - b) % 180.0)
-        return min(d, 180.0 - d)
-
-    weights = np.array([b["n_windows"] for b in blocks], float)
-    mod_med = circ_median([b["mod_dir_deg"] for b in blocks], weights)
-    kept = [b for b in blocks
-            if ang_diff(b["mod_dir_deg"], mod_med) <= 12.0]
-    if len(kept) >= 2:
-        mod_med = circ_median([b["mod_dir_deg"] for b in kept],
-                              [b["n_windows"] for b in kept])
-        kept = [b for b in kept if ang_diff(b["mod_dir_deg"], mod_med) <= 12.0]
-    if len(kept) < 2:
-        kept = blocks
-
-    # Strip axis comes from the geometry of the block centres, which are
-    # collinear by construction. Deriving it from the modulation direction
-    # instead would require knowing whether the printed lines run along or
-    # across the strip — an assumption that is wrong for half the phantoms.
-    strip_angle = _axis_through(kept)
-    if strip_angle is None:
-        strip_angle = (mod_med - 90.0) % 180.0
-    u = np.array([np.cos(np.deg2rad(strip_angle)), np.sin(np.deg2rad(strip_angle))])
-    perp = np.array([-u[1], u[0]])
-
-    # collinearity: drop blobs far from the strip centre line
-    if len(kept) >= 3:
-        P = np.array([b["center_mm"] for b in kept], float)
-        offs = P @ perp
-        med = float(np.median(offs))
-        mad = float(np.median(np.abs(offs - med))) + 1e-6
-        kept = [b for b, o in zip(kept, offs)
-                if abs(o - med) <= max(4.0 * mad, 6.0)]
-        refit = _axis_through(kept)
-        if refit is not None:
-            strip_angle = refit
-            u = np.array([np.cos(np.deg2rad(strip_angle)),
-                          np.sin(np.deg2rad(strip_angle))])
-
-    n_expected = len(ctx.pdef.linepairs["groups"])
-    if len(kept) > n_expected:                      # keep the strongest
-        kept = sorted(kept, key=lambda b: -b["n_windows"])[:n_expected]
-
-    block_mm = ctx.pdef.linepairs.get("roi_size_mm", 12.6)
-    for b in kept:
-        b["coarse_center_mm"] = list(b["center_mm"])
-        b["center_mm"] = _refine_center_fine(
-            img, x0, y0, step, b["center_mm"], b["freq_lp_mm"],
-            strip_angle, block_mm)
-        b["t"] = float(np.dot(b["center_mm"], u))
-    kept.sort(key=lambda b: b["t"])
-    return kept, strip_angle
+        measured = _measure_pattern_2dfft(ctx, center)
+        if measured is None:
+            continue
+        frequency, direction_px = measured
+        if not _FREQ_LO - 0.15 <= frequency <= _FREQ_HI:
+            continue
+        direction = np.linalg.solve(ctx.T.A, direction_px)
+        mod_dir = float(np.degrees(np.arctan2(direction[1], direction[0])) % 180)
+        refined = _refine_center_fine(img, x0, y0, step, center, frequency,
+                                      mod_dir, block_mm)
+        fine = {"method": "directional_pattern_centroid", "steps_mm": list(STEPS_MM),
+                "initial_center_mm": center, "center_mm": refined,
+                "shift_mm": float(np.linalg.norm(np.asarray(refined) - center))}
+        blocks.append({"center_mm": refined, "coarse_center_mm": list(center),
+                       "template_center_mm": expected.tolist(),
+                       "freq_lp_mm": float(frequency), "mod_dir_deg": mod_dir,
+                       "n_windows": int(np.count_nonzero(
+                           sample(response, np.asarray(center) + np.array(
+                               [[dx, dy] for dx in (-2, 0, 2) for dy in (-2, 0, 2)])) > 0)),
+                       "t": float(np.dot(refined, u)),
+                       "positioning": {"strip": positioning, "local": fine}})
+    blocks.sort(key=lambda b: b["t"])
+    measured_axis = _axis_through(blocks)
+    return blocks, measured_axis if measured_axis is not None else strip_angle
 
 
 def _match_blocks_to_groups(ctx: Ctx, blocks, strip_angle):
-    """Assign detected blocks to definition groups by measured frequency,
-    keeping the along-strip ordering consistent."""
-    groups = ctx.pdef.linepairs["groups"]
+    """Match frequency AND spatial order, including incomplete/reversed strips.
+
+    A greedy frequency match can give 1.2 lp/mm the measured 1.1 block, leaving
+    1.1 to take 1.2. Enumerating the small ordered subsets keeps identities
+    consistent when a group is missing, without inventing a detected block.
+    """
+    from itertools import combinations
+
     if not blocks:
         return {}
-    nom_f = np.array([g["freq_lp_mm"] for g in groups], float)
-    # order groups along the strip using their nominal positions
-    u = np.array([np.cos(np.deg2rad(strip_angle)), np.sin(np.deg2rad(strip_angle))])
+    groups = ctx.pdef.linepairs["groups"]
+    u = rotation(strip_angle)[:, 0]
     order = np.argsort([np.dot(g["center_mm"], u) for g in groups])
-    assigned = {}
-    if len(blocks) == len(groups):
-        for slot, b in zip(order, blocks):          # both sorted along strip
-            assigned[groups[slot]["id"]] = b
-        # ordering sanity: measured frequency must track the nominal ordering
-        meas = [assigned[groups[s]["id"]]["freq_lp_mm"] for s in order]
-        nom = [nom_f[s] for s in order]
-        if np.corrcoef(meas, nom)[0, 1] < 0.5:
-            assigned = {}
-    if not assigned:                                 # fall back to frequency match
-        used = set()
-        for gi, g in enumerate(groups):
-            best, bd = None, np.inf
-            for k, b in enumerate(blocks):
-                if k in used:
-                    continue
-                d = abs(b["freq_lp_mm"] - g["freq_lp_mm"])
-                if d < bd:
-                    bd, best = d, k
-            if best is not None and bd < 0.35:
-                assigned[g["id"]] = blocks[best]
-                used.add(best)
-    # A block whose measured frequency contradicts its assigned identity is a
-    # mis-assignment, not a measurement: drop it rather than report it.
-    for g in groups:
-        b = assigned.get(g["id"])
-        if b is not None and abs(b["freq_lp_mm"] - g["freq_lp_mm"]) > 0.35:
-            del assigned[g["id"]]
-    return assigned
+    blocks = sorted(blocks, key=lambda b: np.dot(b["center_mm"], u))
+    for count in range(min(len(groups), len(blocks)), 0, -1):
+        best, best_cost = {}, np.inf
+        for sequence in (order, order[::-1]):
+            for selected_groups in combinations(sequence, count):
+                for selected_blocks in combinations(range(len(blocks)), count):
+                    errors = np.array([abs(groups[gi]["freq_lp_mm"] - blocks[bi]["freq_lp_mm"])
+                                       for gi, bi in zip(selected_groups, selected_blocks)])
+                    if np.any(errors > 0.35):
+                        continue
+                    cost = float(np.sum(errors ** 2))
+                    if cost < best_cost:
+                        best_cost = cost
+                        best = {groups[gi]["id"]: blocks[bi]
+                                for gi, bi in zip(selected_groups, selected_blocks)}
+        if best:
+            return best
+    return {}
 
 
 def propose(ctx: Ctx) -> dict:
@@ -294,7 +276,8 @@ def propose(ctx: Ctx) -> dict:
     nominal_angle = lp.get("strip_angle_deg", 45.0)
     try:
         blocks, strip_angle = detect_line_blocks(ctx)
-        assigned = _match_blocks_to_groups(ctx, blocks, strip_angle or nominal_angle)
+        assigned = _match_blocks_to_groups(ctx, blocks,
+                                           strip_angle if strip_angle is not None else nominal_angle)
     except Exception:
         blocks, strip_angle, assigned = [], None, {}
     if strip_angle is None:
@@ -323,6 +306,7 @@ def propose(ctx: Ctx) -> dict:
         entry = {
             "id": g["id"], "freq_lp_mm": g["freq_lp_mm"],
             "nominal_center_mm": list(g["center_mm"]), "detected": detected,
+            "positioning": b.get("positioning") if detected else None,
             "roi": rect_roi(ctx, center, (roi_mm, roi_mm), angle,
                             roi_id=f"linepairs/{g['id']}"),
             "profile_seg": segment(ctx, p0, p1, f"linepairs/{g['id']}/profile"),

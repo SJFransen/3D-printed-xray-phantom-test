@@ -16,6 +16,7 @@ from . import ALGO_VERSION
 from .analysis import geometry as geo_mod
 from .analysis import linepairs, lowcontrast, uniformity, wedge
 from .analysis.common import Ctx
+from .analysis.positioning import build_templates
 from .ingest import ScanData, protocol_signature
 from .phantom_def import PhantomDef
 from .registration import Registration, register
@@ -87,6 +88,9 @@ def registration_from_dict(d: dict) -> Registration:
 
 
 def propose_all(ctx: Ctx) -> dict:
+    # Project every feature before any local refinement. The registered frame
+    # is shared; independent local corrections never alter the measurement scale.
+    ctx.templates = build_templates(ctx)
     out = {}
     for name in TESTS:
         try:

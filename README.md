@@ -129,7 +129,13 @@ phantom's own millimetre coordinate system, calibrated from six reference scans
 covering three orientations. Its `provenance` section records how each value was
 obtained.
 
-Three points matter when reading it:
+The layout drives positioning as follows:
+
+- **Template first, then local refinement.** Registration projects the complete
+  feature layout into the scan. Bounded iterations align feature outlines and
+  groups from coarse to fine, preserving feature sizes and the measured QA
+  quantities. Search settings are stored with each feature in the definition.
+  See [docs/ALGORITHMS.md](docs/ALGORITHMS.md) for scores and fallback behaviour.
 
 - **Line-pair blocks are measured in every scan.** The stored positions are
   search seeds only, so small differences between phantom units are absorbed
@@ -139,8 +145,8 @@ Three points matter when reading it:
   stored values are the mean of the two, so they are not design intent.
 - **A substantially different build needs its own definition.** Runtime
   measurement handles a few millimetres of variation, not a different layout.
-  A phantom whose resolution strip runs in the opposite frequency order, or
-  which has a different number of groups, will be found but mislabelled. See
+  Reversed line-pair frequency order is resolved from measurements; a different
+  number of groups or substantially different geometry needs a matching definition. See
   [docs/MAINTENANCE.md](docs/MAINTENANCE.md#a-phantom-that-differs-from-the-definition).
 - **Hand corrections are remembered per phantom.** Confirming step C stores the
   measuring points against the analysis's Phantom name and replays them on the

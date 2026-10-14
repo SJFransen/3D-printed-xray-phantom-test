@@ -217,8 +217,9 @@ comparable throughout, whereas one spanning an algorithm change is not.
 Automatic placement is seeded from `data/phantom_definitions/msf_v1.json`.
 Runtime measurement absorbs a few millimetres of variation between phantom
 units, but not a different layout. On a substantially different build the
-patterns are usually still *found* — the strip axis, the block positions and
-their frequencies are measured correctly — but they may be *labelled* wrongly.
+template searches may no longer cover the objects. Reversed line-pair
+frequency order is supported, but different group counts or geometry require
+a definition for that build.
 
 Symptoms in Stage B:
 
