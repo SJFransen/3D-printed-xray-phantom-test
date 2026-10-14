@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import ndimage
 
-from ..features import (centroid_peak, find_peaks_1d, sample_profile)
+from ..features import (centroid_peak, find_peaks_1d, locate_line_center, sample_profile)
 from .common import Ctx, rect_roi, segment, stats_for_roi
 from .positioning import STEPS_MM, project, refine_pose, rotation, template_for
 
@@ -151,6 +151,88 @@ def _axis_through(blocks):
     return float(np.degrees(np.arctan2(v[1], v[0])) % 180.0)
 
 
+def _align_blocks_to_middle_line(ctx: Ctx, blocks, strip_angle):
+    """Final transverse alignment to the printed connector between gratings.
+
+    Probe only the gaps, where the connector is not obscured by the pattern.
+    The small search tube excludes the two outer frame lines. A robust straight
+    fit sets the strip angle; projection preserves every block's position along
+    that line. Without sufficient evidence the existing placement is retained.
+    """
+    if len(blocks) < 3:
+        return blocks, strip_angle
+    points = np.array([b["center_mm"] for b in blocks], float)
+    origin = points.mean(axis=0)
+    u = rotation(strip_angle)[:, 0]
+    v = np.array([-u[1], u[0]])
+    along = np.sort((points - origin) @ u)
+    nominal = np.array([g["center_mm"] for g in ctx.pdef.linepairs["groups"]])
+    pitch = float(np.median(np.diff(np.sort(nominal @ u))))
+    block_mm = ctx.pdef.linepairs.get("roi_size_mm", 12.6)
+    search_mm = 4.0
+    samples, gaps = [], []
+    direction_px = ctx.T.A @ v
+    direction_px /= np.linalg.norm(direction_px)
+    h, w = ctx.pixels.shape
+    for gap, (left, right) in enumerate(zip(along[:-1], along[1:])):
+        # Skip gaps spanning a missing group and keep away from grating edges.
+        if not block_mm * np.sqrt(2) + 3 < right - left < 1.5 * pitch:
+            continue
+        for offset in (-1.0, 0.0, 1.0):
+            probe = origin + ((left + right) / 2 + offset) * u
+            bounds = np.array([probe + a * search_mm * v + b * 0.75 * u
+                               for a in (-1, 1) for b in (-1, 1)])
+            bounds_px = ctx.T.mm_to_px(bounds)
+            if (np.any(bounds_px < 0) or np.any(bounds_px[:, 0] > w - 1)
+                    or np.any(bounds_px[:, 1] > h - 1)):
+                continue
+            found, _ = locate_line_center(
+                ctx.pixels, ctx.T.mm_to_px(probe), direction_px,
+                search_half=search_mm * np.linalg.norm(ctx.T.A @ v), n=81,
+                avg_half_width=0.75 * np.linalg.norm(ctx.T.A @ u), n_avg=5)
+            if found is not None:
+                delta = ctx.T.px_to_mm(found) - origin
+                transverse = float(delta @ v)
+                if abs(transverse) < search_mm - 0.25:
+                    samples.append([float(delta @ u), transverse])
+                    gaps.append(gap)
+    if len(samples) < 6 or len(set(gaps)) < 2:
+        return blocks, strip_angle
+    samples = np.array(samples)
+    A = np.c_[samples[:, 0], np.ones(len(samples))]
+    keep = np.ones(len(samples), dtype=bool)
+    for _ in range(3):
+        if keep.sum() < 6 or len(set(np.asarray(gaps)[keep])) < 2:
+            return blocks, strip_angle
+        coef = np.linalg.lstsq(A[keep], samples[keep, 1], rcond=None)[0]
+        residual = samples[:, 1] - A @ coef
+        med = float(np.median(residual[keep]))
+        mad = float(np.median(np.abs(residual[keep] - med)))
+        keep = np.abs(residual - med) <= max(0.25, 4.0 * mad)
+    if keep.sum() < 6 or len(set(np.asarray(gaps)[keep])) < 2:
+        return blocks, strip_angle
+    slope, intercept = np.linalg.lstsq(A[keep], samples[keep, 1], rcond=None)[0]
+    rms = float(np.sqrt(np.mean((samples[keep, 1] - A[keep] @ [slope, intercept]) ** 2)))
+    if rms > 0.3 or abs(np.degrees(np.arctan(slope))) > 5.0:
+        return blocks, strip_angle
+    normal = (v - slope * u) / np.hypot(1, slope)
+    line_origin = origin + intercept * v
+    shifts = (points - line_origin) @ normal
+    if np.max(np.abs(shifts)) > search_mm:
+        return blocks, strip_angle
+    aligned = points - shifts[:, None] * normal
+    angle = float((strip_angle + np.degrees(np.arctan(slope))) % 180)
+    for block, center, shift in zip(blocks, aligned, shifts):
+        block["positioning"]["middle_line"] = {
+            "initial_center_mm": list(block["center_mm"]),
+            "center_mm": center.tolist(), "shift_mm": float(abs(shift)),
+            "angle_deg": angle, "fit_rms_mm": rms, "n_samples": int(keep.sum()),
+        }
+        block["center_mm"] = center.tolist()
+        block["t"] = float(center @ rotation(angle)[:, 0])
+    return blocks, angle
+
+
 def detect_line_blocks(ctx: Ctx, ratio_threshold: float = 12.0):
     """Align the strip template, then refine each block in its own local mask.
 
@@ -230,7 +312,8 @@ def detect_line_blocks(ctx: Ctx, ratio_threshold: float = 12.0):
                        "positioning": {"strip": positioning, "local": fine}})
     blocks.sort(key=lambda b: b["t"])
     measured_axis = _axis_through(blocks)
-    return blocks, measured_axis if measured_axis is not None else strip_angle
+    final_angle = measured_axis if measured_axis is not None else strip_angle
+    return _align_blocks_to_middle_line(ctx, blocks, final_angle)
 
 
 def _match_blocks_to_groups(ctx: Ctx, blocks, strip_angle):

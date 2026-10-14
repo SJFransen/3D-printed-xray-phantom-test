@@ -199,6 +199,14 @@ frame. Its centre of mass is refined with progressively smaller bounded moves
 before leaving the 5 mm local mask. The strip axis is finally fitted through
 the measured block centres, independently of the printed-line direction.
 
+**Final middle-line alignment.** After local centring, short cross-strip
+profiles locate the printed connector in the gaps between gratings. A robust
+straight-line fit supplies the final strip angle. ROI centres are projected
+perpendicularly onto that line, preserving their positions along it and the
+guide's 45-degree ROI offset. The search/correction is limited to 4 mm and the
+angle correction to 5 degrees. Weak or clipped evidence retains the previous
+placement; manual adjustments are still applied after this automatic proposal.
+
 **Identity assignment.** Ordered subsets are matched by measured frequency,
 including missing groups and reversed frequency order. A match more than
 0.35 lp/mm from its nominal identity is rejected. Nominal frequency identifies
