@@ -257,16 +257,21 @@ value range, not as absolute pixel values. Detectors differ in bit depth — 12
 bits on one unit, 14 on another — so a control calibrated to one blanks out an
 image from the other entirely.
 
+The renderer and the sliders share the same 1–99 percentile automatic range.
+Opening a scan resets the controls to that window, and late image responses
+cannot overwrite a newer W/C setting or the next scan. Windowing also works
+before successful registration and preserves fractional source values.
+
 ## Detectors report failure rather than guessing
 
 Where a feature cannot be found reliably, the software says so and requests
 manual placement, instead of returning a number that looks authoritative.
 
-Field-edge detection is the clearest case: it requires a genuine intensity step
-that a linear ramp cannot explain as well, with sufficient plateau on both sides
-and away from the image border. On acquisitions where the phantom nearly fills
-the detector there is no collimation edge to find, and the honest answer is "not
-measurable".
+Field-edge detection starts along each blue ruler line and walks outward to the
+first zero-valued boundary, including a boundary inside the phantom. Without a
+zero boundary, it requires a genuine intensity step that a linear ramp cannot
+explain as well, with sufficient plateau on both sides and away from the image
+border. An image border alone does not establish the radiation-field edge.
 
 ## Pass criteria matched to the phantom, not to convention
 

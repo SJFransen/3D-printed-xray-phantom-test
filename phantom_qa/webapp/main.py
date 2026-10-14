@@ -38,6 +38,7 @@ from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SharedThrottle
 from ..store import (VALIDATION_LABELS, VALIDATION_STATES, Store,
                      acquisition_flag, csv_export, flatten_results,
                      wide_csv_export)
+from .display import display_range, window_image
 
 #: A deletion reason short enough to be meaningless is the same as none at all,
 #: and the audit log is the only record of why data was destroyed.
@@ -438,12 +439,7 @@ def _display_range(aid: str) -> dict:
     Detectors differ in bit depth — 12-bit on one unit, 14-bit on another — so
     a fixed 0..4095 slider range whites out a 14-bit image entirely. The
     window/level controls work relative to this measured range instead."""
-    img = _scan(aid).pixels
-    lo, hi = (float(x) for x in np.percentile(img, [0.5, 99.5]))
-    if hi - lo < 1e-6:
-        lo, hi = float(img.min()), float(img.max()) or 1.0
-    return {"lo": lo, "hi": hi,
-            "min": float(img.min()), "max": float(img.max())}
+    return display_range(_scan(aid).pixels)
 
 
 def _reg_payload(aid: str, reg: Registration) -> dict:
@@ -718,6 +714,14 @@ def get_analysis(aid: str):
     except Exception as e:                     # corrupted reg or missing file
         log.error("registration payload failed for analysis=%s: %s", aid, e)
         payload["registration"] = None
+    # Windowing remains available when the image exists but registration failed.
+    if payload["registration"] is not None:
+        payload["display_range"] = payload["registration"]["display_range"]
+    else:
+        try:
+            payload["display_range"] = _display_range(aid)
+        except Exception:                     # history can outlive a source file
+            payload["display_range"] = None
     return pipeline.to_jsonable(payload)
 
 
@@ -736,12 +740,7 @@ def image_png(aid: str, wc: float | None = None, ww: float | None = None,
     if key not in _img_cache:
         from PIL import Image
         img = _scan(aid).pixels
-        if wc is None or ww is None:
-            lo, hi = np.percentile(img, [1, 99])
-        else:
-            lo, hi = wc - ww / 2, wc + ww / 2
-        a = np.clip((img - lo) / max(hi - lo, 1e-9), 0, 1)
-        pil = Image.fromarray((a * 255).astype(np.uint8))
+        pil = Image.fromarray(window_image(img, wc, ww))
         if max(pil.size) > scale:
             pil.thumbnail((scale, scale), Image.LANCZOS)
         buf = io.BytesIO()

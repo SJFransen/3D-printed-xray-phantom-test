@@ -22,7 +22,8 @@ The **W** (width) and **C** (centre) sliders are **relative to the image's own
 value range**, shown as a percentage with the resulting absolute values beside
 them. Detectors differ in bit depth — 12-bit on one unit, 14-bit on another — so
 a fixed absolute scale would white out an image from the wrong device entirely.
-**auto** returns to the automatic window.
+**auto** returns to the automatic 1–99 percentile window. Opening another scan
+resets both controls to that scan's automatic window.
 
 ### Upload — choose the file and identify the scan
 
@@ -79,6 +80,11 @@ the measured values.
 Every detected pattern is outlined and labelled: the five line-pair groups with
 their frequencies, the low-contrast block, the wedge steps, the uniformity
 squares, the rulers and the field edges.
+
+The four field-edge markers are initialised by walking outward along the blue
+ruler lines until zero-valued pixels begin. A marker can sit inside the phantom
+when the radiation field is smaller than its face; the detection table reports
+the distance as **inside** or **outside**.
 
 Confirm each label sits on the correct object. Zoom in — a mislabelled group or
 a 180° mix-up must be caught here.

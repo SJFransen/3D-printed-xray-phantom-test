@@ -142,7 +142,17 @@ above; `reliable` on each ruler row records the outcome.
 sides and both diagonals, against the assumed nominal side of 300.0 mm; plus
 central-line separations (nominal 260.0 mm = side − 2 × 20 mm).
 
-**Field alignment.** A probe runs outward from each side, from 8 mm past the
+**Field alignment.** During pattern initialisation, each blue ruler probe also
+sets the starting line for a field-edge search. From the probe's inner end, the
+search walks outward through actual image pixels to the first zero-valued
+boundary. Three consecutive zeros confirm the boundary (or the remaining pixels
+at the image border). If the inner end is already zero, the search first moves
+toward the phantom centre to exposed pixels. The marker is placed on the first
+zero, including when collimation falls inside the phantom; offsets are positive
+outside and negative inside. An image border without actual zeros is not an edge.
+
+For images without a zero boundary, the existing step detector remains available.
+Its probe runs outward from each side, from 8 mm past the
 face edge to 12 mm short of the image border, averaged over ±10 mm along the
 edge. A collimation border is a genuine step — direct exposure on one side, a
 blocked beam on the other — whereas scatter gradients and the phantom's carrier
@@ -160,10 +170,10 @@ Otherwise the side is reported not detected, with a reason, and manual placement
 is requested. Deviation is the distance from the field edge to that side's
 central long line, in millimetres and as a percentage of SID (tolerance ±2 %).
 
-The probe deliberately stops short of the image border, which is itself a large
+The step-detector probe deliberately stops short of the image border, which is itself a large
 sharp intensity change that would otherwise be reported as a collimation edge.
 
-> On all six reference scans every side is correctly reported as not measurable:
+> In the original step-detector validation, all six reference scans were reported as not measurable:
 > the phantom nearly fills the detector, leaving only 30–61 mm of image outside
 > its edge, and the radiation field extends past the image. To use this test,
 > collimate visibly inside the detector.

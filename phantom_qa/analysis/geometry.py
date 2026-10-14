@@ -73,7 +73,70 @@ def _ruler_probe(ctx: Ctx, side: str, probe_len_mm: float = 42.0):
                         "value": np.asarray(vals).tolist()}}
 
 
-def _field_edge(ctx: Ctx, side: str, start_mm: float = 8.0):
+def _zero_field_edge(ctx: Ctx, side: str, ruler=None):
+    """Walk outward along the blue ruler probe to the first zero boundary.
+
+    Start at the probe's inner end. If collimation already covers that point,
+    backtrack toward the phantom centre to exposed pixels before walking out.
+    Up to three consecutive zero samples confirm the boundary, excluding single
+    dead pixels. At the image border the remaining real samples suffice; no
+    synthetic padding is used.
+    """
+    half = ctx.pdef.side_mm / 2
+    (ex, ey), (nx, ny) = _SIDE_GEOM[side]
+    edge_mm = np.array([ex * half, ey * half], float)
+    outward = -np.array([nx, ny], float)
+    inner_mm = np.asarray((ruler or {}).get("probe", {}).get(
+        "p1_mm", edge_mm - outward * 42.0), float)
+    # Keep the ray on the actual blue probe, including any tangential offset.
+    base_mm = inner_mm - outward * np.dot(inner_mm, outward)
+    origin = np.asarray(ctx.T.mm_to_px(base_mm), float)
+    direction = ctx.T.A @ outward
+    ppm = float(np.linalg.norm(direction))
+    direction = direction / ppm
+    h, w = ctx.pixels.shape
+    if not (0 <= origin[0] <= w - 1 and 0 <= origin[1] <= h - 1):
+        return None
+    limits = []
+    for position, delta, upper in zip(origin, direction, (w - 1, h - 1)):
+        if abs(delta) > 1e-9:
+            limits.append(((upper if delta > 0 else 0) - position) / delta)
+    stop = min(limits)
+    distances = np.arange(0.0, stop + 1e-8, 1.0)
+    if len(distances) < 3:
+        return None
+    points = origin + distances[:, None] * direction
+    values = ndimage.map_coordinates(ctx.pixels, [points[:, 1], points[:, 0]],
+                                    order=0, mode="nearest")
+    start = int(np.clip(np.dot(ctx.T.mm_to_px(inner_mm) - origin, direction),
+                        0, len(values) - 1))
+    if values[start] <= 0:
+        exposed = np.flatnonzero(values[:start + 1] > 0)
+        if not exposed.size:
+            return None
+        start = int(exposed[-1])
+    zero = values <= 0
+    runs = np.flatnonzero(zero & np.r_[zero[1:], True] & np.r_[zero[2:], True, True])
+    runs = runs[runs >= start]
+    if not runs.size:
+        return None
+    index = int(runs[0])
+    point_mm = ctx.T.px_to_mm(points[index])
+    return {"side": side, "detected": True, "manual": False,
+            "method": "first_zero", "edge_pt_px": points[index].tolist(),
+            "offset_from_edge_mm": float(np.dot(point_mm - edge_mm, outward)),
+            "probe_len_mm": float((distances[-1] - distances[start]) / ppm),
+            "probe": segment(ctx, ctx.T.px_to_mm(points[start]),
+                             ctx.T.px_to_mm(points[-1]), f"field/{side}")}
+
+
+def _field_edge(ctx: Ctx, side: str, start_mm: float = 8.0, ruler=None):
+    """Prefer the first zero along the ruler; retain nonzero step detection."""
+    zero = _zero_field_edge(ctx, side, ruler)
+    return zero if zero is not None else _field_edge_step(ctx, side, start_mm)
+
+
+def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 8.0):
     """Radiation-field (collimation) edge along the side's outward normal.
 
     A collimated border is a genuine STEP: direct exposure on one side, blocked
@@ -196,7 +259,7 @@ def _field_edge(ctx: Ctx, side: str, start_mm: float = 8.0):
 
 def propose(ctx: Ctx) -> dict:
     rulers = {side: _ruler_probe(ctx, side) for side in SIDES}
-    fields = {side: _field_edge(ctx, side) for side in SIDES}
+    fields = {side: _field_edge(ctx, side, ruler=rulers[side]) for side in SIDES}
     corners = {}
     if ctx.reg is not None:
         S2 = ctx.pdef.side_mm / 2.0

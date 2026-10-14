@@ -7,7 +7,7 @@ const TESTS = ["geometry", "linepairs", "lowcontrast", "uniformity", "wedge"];
 const STAGES = ["U", "A", "B", "C", "D", "E", "F"];
 
 const S = {
-  aid: null, record: null, reg: null, geometry: null, results: null,
+  aid: null, record: null, reg: null, geometry: null, results: null, analysisRequest: 0,
   baseline: null, stage: "U", sid: 1000,
   imgEl: null, imgScale: 1, nativeCols: 1, nativeRows: 1,
   view: { k: 1, tx: 0, ty: 0 },
@@ -27,6 +27,8 @@ const S = {
    selected ROI id, a half-finished corner click, a dimension preview — can be
    drawn over the next one. */
 function clearAnalysisState() {
+  S.analysisRequest++;
+  imageRequest++;
   S.aid = null; S.record = null; S.reg = null; S.geometry = null;
   S.results = null; S.baseline = null; S.imgEl = null;
   S.selectedRoi = null; S.mode = "normal"; S.manualCorners = [];
@@ -35,6 +37,7 @@ function clearAnalysisState() {
   S.history = { seq: 0, undo_depth: 0, redo_depth: 0 };
   S.layoutSource = ""; S.phantomProfile = null;
   S.lcAngleCommitted = 0; S.rotTargetId = null; S.previewPending = false;
+  resetWL();
   const d = document.querySelector("#roi-details");
   if (d) d.remove();
 }
@@ -144,16 +147,23 @@ function zoomFit() {
   draw();
 }
 
+let imageRequest = 0;
 function loadImage(params = "") {
   if (!S.aid) return;
+  const request = ++imageRequest, aid = S.aid;
   const img = new Image();
   img.onload = () => {
+    if (request !== imageRequest || aid !== S.aid) return;
     const first = !S.imgEl;
     S.imgEl = img;
     S.imgScale = img.width / S.nativeCols;
     if (first) zoomFit(); else draw();
   };
-  img.src = `api/analyses/${S.aid}/image.png${params}`;
+  img.onerror = () => {
+    if (request === imageRequest && aid === S.aid)
+      status("Could not load the image. Adjust W/C or press auto to retry.", true);
+  };
+  img.src = `api/analyses/${aid}/image.png${params}`;
 }
 
 /* Window/level is expressed RELATIVE to the image's own value range, because
@@ -161,7 +171,7 @@ function loadImage(params = "") {
    image completely. 0-100 on the sliders maps into [lo, hi] measured from the
    data, and width can exceed the range so the image can be flattened. */
 function wlAbsolute() {
-  const r = (S.reg && S.reg.display_range) || null;
+  const r = (S.reg && S.reg.display_range) || (S.record && S.record.display_range);
   if (!r) return null;
   const span = Math.max(r.hi - r.lo, 1e-6);
   const cPct = +$("#wl-center").value / 100;       // 0..1 across the range
@@ -173,26 +183,34 @@ function wlAbsolute() {
 
 function updateWLReadout() {
   const a = wlAbsolute();
+  const value = v => Number(v.toPrecision(5)).toString();
   $("#wl-readout").textContent = a
-    ? `W ${Math.round(a.ww)}  C ${Math.round(a.wc)}`
+    ? `W ${value(a.ww)}  C ${value(a.wc)}`
     : "";
 }
 
 let wlTimer = null;
+function resetWL() {
+  clearTimeout(wlTimer);
+  wlTimer = null;
+  $("#wl-center").value = 50;
+  $("#wl-width").value = 100;
+  updateWLReadout();
+}
 function onWL() {
   updateWLReadout();
   clearTimeout(wlTimer);
+  imageRequest++;                    // invalidate older responses immediately
   wlTimer = setTimeout(() => {
+    wlTimer = null;
     const a = wlAbsolute();
-    if (a) loadImage(`?wc=${a.wc.toFixed(1)}&ww=${a.ww.toFixed(1)}`);
+    if (a) loadImage(`?wc=${a.wc}&ww=${a.ww}`);
   }, 200);
 }
 $("#wl-center").addEventListener("input", onWL);
 $("#wl-width").addEventListener("input", onWL);
 $("#wl-reset").addEventListener("click", () => {
-  $("#wl-center").value = 50;
-  $("#wl-width").value = 100;
-  updateWLReadout();
+  resetWL();
   loadImage();                       // server default: 1-99 percentile stretch
 });
 $("#zoom-fit").addEventListener("click", zoomFit);
@@ -1465,7 +1483,9 @@ async function openAnalysis(aid) {
   // this one, not even a selected ROI id or a half-finished corner click.
   clearAnalysisState();
   S.aid = aid;
+  const request = S.analysisRequest;
   const rec = await api(`api/analyses/${aid}`);
+  if (request !== S.analysisRequest || aid !== S.aid) return;
   S.record = rec;
   S.reg = rec.registration;
   S.geometry = rec.geometry;
@@ -1476,6 +1496,7 @@ async function openAnalysis(aid) {
   S.sid = rec.sid_mm || 1000;
   S.nativeCols = S.reg ? S.reg.image.cols : (rec.meta.Columns || 3000);
   S.nativeRows = S.reg ? S.reg.image.rows : (rec.meta.Rows || 3000);
+  updateWLReadout();
   loadImage();
   showTab("analyze");
   setStage(rec.geometry ? (rec.results ? "F" : rec.stage || "B") : "A");
@@ -1551,6 +1572,7 @@ async function submitManualCorners() {
   try {
     S.reg = await postJSON(`api/analyses/${S.aid}/register`,
       { corners_px: S.manualCorners });
+    updateWLReadout();
     S.manualCorners = [];
     S.geometry = null;
     setStage("A");
@@ -1576,11 +1598,11 @@ function stageB(c) {
   const g = S.geometry;
   const rows = [];
   const missing = [];
-  const add = (test, name, ok, extra = "") => {
+  const add = (test, name, ok, extra = "", missingLabel = "NOT refined (nominal used)") => {
     if (!ok) missing.push(name);
     rows.push(
       `<tr><td><span class="swatch" style="background:${COLORS[test]}"></span>
-       ${name}</td><td>${ok ? "detected" : "NOT refined (nominal used)"}</td>
+       ${name}</td><td>${ok ? "detected" : missingLabel}</td>
        <td>${extra}</td></tr>`);
   };
   if (g.linepairs && !g.linepairs._error)
@@ -1602,8 +1624,9 @@ function stageB(c) {
           r.detected ? `${r.line_offsets_mm.length} lines` : ""));
     Object.entries(g.geometry.field_edges).forEach(([side, f]) =>
       add("geometry", `field edge ${side}`, f.detected,
-          f.detected ? `${fmt(f.offset_from_edge_mm, 1)} mm outside`
-                     : `<span class="hint">${f.reason || "no edge"} — place manually in Stage C if visible</span>`));
+          f.detected ? `${fmt(Math.abs(f.offset_from_edge_mm), 1)} mm ${f.offset_from_edge_mm < 0 ? "inside" : "outside"}`
+                     : `<span class="hint">${f.reason || "no edge"} — place manually in Stage C if visible</span>`,
+          "not detected"));
   }
   TESTS.forEach(t => {
     if (g[t] && g[t]._error) rows.push(
@@ -1621,7 +1644,7 @@ function stageB(c) {
       (${total} of ${total}).</div>`;
   } else {
     verdict = `<div class="reasons-why"><b>${found} of ${total} patterns were
-      found.</b> These were not, so their nominal positions are being used:
+      found.</b> Check these measuring points in the next step:
       <ul>${missing.map(m => `<li>${m}</li>`).join("")}</ul></div>`;
   }
 
@@ -1882,7 +1905,7 @@ async function submitFieldEdge(natPoint, side = S.fieldEdgeSide) {
       { side, point_px: natPoint });
     S.geometry.geometry.field_edges[side] = f;
     noteHistory(f);
-    status(`Field edge ${side} set (${fmt(f.offset_from_edge_mm, 1)} mm outside phantom edge).`);
+    status(`Field edge ${side} set (${fmt(Math.abs(f.offset_from_edge_mm), 1)} mm ${f.offset_from_edge_mm < 0 ? "inside" : "outside"} phantom edge).`);
     draw();
     return true;
   } catch (e) { status("Failed: " + e.message, true); return false; }
