@@ -5,6 +5,14 @@ a scan, enter optional site/phantom/operator/notes, then press **Upload & analyz
 The page switches to processing and then a simplified results screen with a
 read-only phantom viewer and To Do panel. **New scan** returns to upload.
 
+The viewer fits the full scan into the available screen height. Its **W** (window
+width), **C** (window center), **auto** and **fit** controls use Analyze's image
+rendering and shared view calculations. Scroll or use **+ / −** to zoom; drag the
+image to pan. Image and ROI outlines move together. These controls change only
+the preview, never the measured pixels, ROI positions or stored results. Automatic
+window reset preserves zoom/pan; fit restores the full scan. Fitted scans also
+refit when the viewport changes size.
+
 Green borders mean PASS; orange borders mean attention. Feature labels have
 colored borders without explanations, measurement summaries or technical detail.
 Existing proposed ROIs remain visible in orange when detection or measurement
@@ -68,9 +76,11 @@ needed. Administrator sign-off remains protected.
 | `phantom_qa/webapp/static/index.html` | Auto Analyze tab and separate upload/results markup |
 | `phantom_qa/webapp/static/auto-analyse.js` | Optional upload, read-only overlays, concise tasks and navigation |
 | `phantom_qa/webapp/static/auto-analyse.css` | Scoped styling |
-| `phantom_qa/webapp/static/app.js` | Generic tab/open-analysis events and shared error detail display |
+| `phantom_qa/webapp/static/viewer-tools.js` | Shared fit, zoom, pan and W/C mapping; read-only image-view controller |
+| `phantom_qa/webapp/static/app.js` | Shared view calculations, generic tab/open-analysis events and error detail display |
 | `tests/test_auto_analyse.py` | Workflow, duplicate, task, ROI and cross-flow parity tests |
-| `tests/test_auto_analyse_browser.py` | Real-browser upload/results, errors, orange ROIs and Analyze handoff |
+| `tests/test_auto_analyse_browser.py` | Real-browser upload/results, view controls, errors, orange ROIs and Analyze handoff |
+| `tests/test_viewer_tools.js` | Preview request races, scan switching, window reset and failed-preview retry |
 | `tests/test_authorization.py` | Authenticated-user classification for the optional route and assets |
 | `README.md` | Guide link |
 
@@ -132,7 +142,8 @@ can prevent the preview from loading; the status borders and To Do remain availa
    static assets and the two Auto test files. Remove the three feature entries
    from the authorization inventory and this guide's README link.
 4. Keep `analysis/assessment.py`, its pipeline/preview integration and shared
-   error rendering: Analyze uses them independently. Shared upload helpers,
+   error rendering, plus `static/viewer-tools.js` and its script include: Analyze
+   uses them independently. Shared upload helpers,
    `new_analysis_once()` and generic navigation events may also remain.
 5. Run the regression suite. No migration or deletion is required; saved automatic
    analyses remain ordinary History records with images, geometry and audit trails.
@@ -145,6 +156,7 @@ Run `python -m pytest -q`, plus:
 node tests/test_window_level.js
 node tests/test_fieldedge_drag.js
 node tests/test_fieldedge_patterns.js
+node tests/test_viewer_tools.js
 ```
 
 Optional browser tests require Playwright, Uvicorn and local Chrome or Playwright
@@ -153,10 +165,14 @@ skip when sample scans are absent.
 
 Validation on 14 October 2026:
 
-- Full suite: **794 passed, 35 skipped, 1 pre-existing failure**; 36 subtests passed.
-- Focused workflow, parity, browser and frontend checks: **93 passed**, including
-  all three real Chrome tests.
-- All three existing JavaScript suites, frontend syntax checks and
+- Full suite before the viewer update: **794 passed, 35 skipped, 1 pre-existing
+  failure**; 36 subtests passed.
+- Viewer update: **288 focused checks passed across regression runs**, including
+  all four real Chrome tests; 6 subtests passed. Coverage includes automatic
+  workflow/parity, rendering, frontend integrity and authorization. The browser
+  checks cover screen fit, W/C, auto reset, zoom, dragging, resizing, overlay
+  alignment and absence of measurement writes from display controls.
+- All four JavaScript suites, frontend syntax checks and
   `git diff --check` passed.
 - The two saved cases exhibiting the original line-pair mismatch both return
   PASS under the corrected check. This verification did not rewrite their records.

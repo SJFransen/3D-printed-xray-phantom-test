@@ -30,6 +30,8 @@ const context = { S, Math, canvas: { style: {},
       offset_from_edge_mm: -20, history: { undo_depth: 1 } };
   } };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(__dirname,
+  '../phantom_qa/webapp/static/viewer-tools.js'), 'utf8'), context);
 vm.runInContext(interaction + submit, context);
 const event = (x, y) => ({ offsetX: x, offsetY: y });
 async function run() {

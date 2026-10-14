@@ -5,6 +5,7 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from .. import auto_analyse, pipeline
+from .display import display_range
 
 
 def create_router(backend):
@@ -46,6 +47,7 @@ def create_router(backend):
                 raise HTTPException(404, "Analysis was deleted while processing. Upload the scan again.")
             payload = auto_analyse.result_payload(record, automatic, duplicate, saved=created)
             payload["image"] = {"rows": scan.shape[0], "cols": scan.shape[1]}
+            payload["display_range"] = display_range(scan.pixels)
             analyses.append(payload)
             seen[aid] = True
         return pipeline.to_jsonable({"analyses": analyses})

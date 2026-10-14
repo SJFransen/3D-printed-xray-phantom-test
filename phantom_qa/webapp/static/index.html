@@ -52,10 +52,23 @@
     <div id="auto-result" class="auto-results-grid hidden">
       <section class="auto-card auto-phantom" aria-label="Phantom results">
         <label id="auto-scan-choice" class="hidden">Scan <select id="auto-scan-select"></select></label>
+        <div class="auto-viewer-toolbar" aria-label="Image controls">
+          <label title="window width, % of this image's own value range">W
+            <input type="range" id="auto-wl-width" min="2" max="150" value="100"></label>
+          <label title="window centre, % across this image's own value range">C
+            <input type="range" id="auto-wl-center" min="0" max="100" value="50"></label>
+          <span id="auto-wl-readout" class="mono hint"></span>
+          <button id="auto-wl-reset" type="button" title="reset to the automatic window">auto</button>
+          <button id="auto-zoom-fit" type="button" title="fit the scan to the viewer">fit</button>
+          <button id="auto-zoom-out" type="button" aria-label="Zoom out">−</button>
+          <button id="auto-zoom-in" type="button" aria-label="Zoom in">+</button>
+        </div>
         <div class="auto-legend"><span class="auto-pass">● PASS</span><span class="auto-attention">● Attention</span></div>
-        <div id="auto-viewer" class="auto-viewer">
-          <img id="auto-image" alt="Phantom scan with read-only measurement regions">
-          <svg id="auto-overlays" aria-label="Read-only feature status overlays" role="img"></svg>
+        <div id="auto-viewer" class="auto-viewer" title="Scroll to zoom; drag to move the image">
+          <div id="auto-viewer-layer">
+            <img id="auto-image" alt="Phantom scan with read-only measurement regions" draggable="false">
+            <svg id="auto-overlays" aria-label="Read-only feature status overlays" role="img"></svg>
+          </div>
         </div>
         <p id="auto-image-error" class="hidden" role="alert">Preview unavailable.</p>
         <ul id="auto-feature-status" class="auto-feature-status" aria-label="Feature results"></ul>
@@ -265,6 +278,7 @@
   </section>
 </main>
 
+<script src="viewer-tools.js"></script>
 <script src="app.js"></script>
 <script src="auto-analyse.js"></script>
 </body>

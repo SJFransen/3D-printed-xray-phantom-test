@@ -26,6 +26,8 @@ const context = {
   api: url => new Promise(resolve => { pending.set(url, resolve); }),
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(__dirname,
+  '../phantom_qa/webapp/static/viewer-tools.js'), 'utf8'), context);
 vm.runInContext(state + viewer + open, context);
 const S = vm.runInContext('S', context);
 const call = code => vm.runInContext(code, context);

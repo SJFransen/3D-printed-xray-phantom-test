@@ -17,28 +17,46 @@
 }
 #view-auto-analyse .auto-labels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 #view-auto-analyse .drop-zone.armed { border-color: var(--accent); }
-#view-auto-analyse .auto-results-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+#view-auto-analyse #auto-results-page { height: 100%; display: flex; flex-direction: column; }
+#view-auto-analyse .auto-results-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-shrink: 0; }
 #view-auto-analyse .auto-results-toolbar h2 { margin: 0 auto 0 0; }
 #view-auto-analyse .auto-results-toolbar button { margin: 0; }
-#view-auto-analyse .auto-results-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); align-items: start; gap: 20px; }
-#view-auto-analyse .auto-todo { position: sticky; top: 0; }
+#view-auto-analyse .auto-results-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); gap: 20px; flex: 1; min-height: 0; }
+#view-auto-analyse .auto-phantom { display: flex; flex-direction: column; min-height: 0; }
+#view-auto-analyse .auto-todo { align-self: start; max-height: 100%; overflow: auto; }
 #view-auto-analyse .auto-task { margin: 0; padding: 14px 0; border-top: 1px solid var(--border); line-height: 1.6; }
 #view-auto-analyse .auto-task:first-child { border-top: 0; padding-top: 0; }
 #view-auto-analyse .auto-task img { max-width: 100%; }
-#view-auto-analyse .auto-viewer { position: relative; background: #080a0c; margin-top: 14px; }
-#view-auto-analyse #auto-image { display: block; width: 100%; height: auto; }
+#view-auto-analyse .auto-viewer-toolbar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  background: var(--panel); font-size: 12px; margin-bottom: 12px; flex-shrink: 0;
+}
+#view-auto-analyse .auto-viewer-toolbar label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+#view-auto-analyse .auto-viewer-toolbar input[type=range] { width: 100px; padding: 0; }
+#view-auto-analyse .auto-viewer {
+  position: relative; background: #000; margin-top: 14px; overflow: hidden;
+  flex: 1; min-height: 180px; cursor: grab; touch-action: none;
+}
+#view-auto-analyse .auto-viewer.dragging { cursor: grabbing; }
+#view-auto-analyse #auto-viewer-layer {
+  position: absolute; top: 0; left: 0; transform-origin: 0 0;
+  pointer-events: none; user-select: none;
+}
+#view-auto-analyse #auto-image { display: block; width: 100%; height: 100%; max-width: none; }
 #view-auto-analyse #auto-overlays { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-#view-auto-analyse .auto-legend { display: flex; gap: 20px; }
+#view-auto-analyse .auto-legend { display: flex; gap: 20px; flex-shrink: 0; }
 #view-auto-analyse .auto-pass { --auto-status: var(--auto-green); }
 #view-auto-analyse .auto-attention { --auto-status: var(--auto-orange); }
 #view-auto-analyse .auto-legend span { color: var(--auto-status); }
-#view-auto-analyse .auto-feature-status { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; padding: 0; }
+#view-auto-analyse .auto-feature-status { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; padding: 0; margin-bottom: 0; flex-shrink: 0; }
 #view-auto-analyse .auto-feature-status li { padding: 9px 12px; border: 2px solid var(--auto-status); border-radius: 6px; }
 #view-auto-analyse #auto-error, #view-auto-analyse #auto-image-error { color: var(--auto-orange); }
 #view-auto-analyse progress { width: 100%; }
 @media (max-width: 850px) {
   #view-auto-analyse { padding: 12px; }
   #view-auto-analyse .auto-results-grid, #view-auto-analyse .auto-labels { grid-template-columns: 1fr; }
-  #view-auto-analyse .auto-todo { position: static; }
+  #view-auto-analyse #auto-results-page { height: auto; }
+  #view-auto-analyse .auto-phantom { height: max(440px, calc(100dvh - 180px)); }
+  #view-auto-analyse .auto-todo { max-height: none; }
   #view-auto-analyse .auto-results-toolbar { flex-wrap: wrap; }
 }

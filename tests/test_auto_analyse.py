@@ -226,9 +226,11 @@ def upload(client, data=None, **labels):
 
 
 def test_upload_runs_pipeline_and_saves_in_history(client, mod, algorithms):
+    from phantom_qa.webapp.display import display_range
     result = upload(client, site="Goma", phantom="P1", operator="Operator")
     assert algorithms == ["register", "propose", "compute"]
     assert result["overall"] == "pass" and result["saved"] and not result["duplicate"]
+    assert result["display_range"] == display_range(ingest.load_image_bytes(png(), "scan.png").pixels)
     rec = mod.store.get(result["id"])
     assert rec["stage"] == "F" and rec["status"] == "pass" and rec["layout_source"] == "auto"
     assert rec["validation_status"] == "" and not rec["validated_by"]

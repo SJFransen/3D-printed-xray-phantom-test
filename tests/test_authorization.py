@@ -122,6 +122,7 @@ ROUTES = [
     ("POST", "/api/logout",                        "user"),
     ("GET",  "/",                                  "user"),
     ("GET",  "/app.js",                            "user"),
+    ("GET",  "/viewer-tools.js",                   "user"),
     ("GET",  "/api/analyses",                      "user"),
     ("POST", "/api/analyses",                      "user"),
     ("POST", "/api/auto-analyse",                  "user"),

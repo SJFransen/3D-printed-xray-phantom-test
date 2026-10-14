@@ -9,6 +9,7 @@ import os
 import socket
 import threading
 import time
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -136,4 +137,77 @@ def test_browser_orange_duplicate_and_failed_request(browser_page, passing):
     assert "Test processing error" not in page.locator("#auto-error").inner_text()
     assert page.locator("#auto-submit").is_enabled()
     assert not page.locator("#auto-result").is_visible()
+    assert not errors
+
+
+def test_browser_viewer_fits_window_levels_zooms_and_pans_without_editing(browser_page):
+    page, errors = browser_page
+    page.set_viewport_size({"width": 1366, "height": 768})
+    with page.expect_response("**/api/auto-analyse") as response:
+        send_scan(page)
+    record = response.value.json()["analyses"][0]
+    viewer = page.locator("#auto-viewer")
+    image = page.locator("#auto-image")
+    layer = page.locator("#auto-viewer-layer")
+    matrix = lambda: layer.evaluate("node => { const m = new DOMMatrix(getComputedStyle(node).transform); return [m.a, m.e, m.f]; }")
+
+    def check_fit():
+        box, scan = viewer.bounding_box(), image.bounding_box()
+        assert 0 < box["height"] and box["y"] + box["height"] <= page.viewport_size["height"]
+        assert box["x"] <= scan["x"] and box["y"] <= scan["y"]
+        assert scan["x"] + scan["width"] <= box["x"] + box["width"] + 1
+        assert scan["y"] + scan["height"] <= box["y"] + box["height"] + 1
+        assert page.locator("#auto-feature-status").bounding_box()["y"] < page.viewport_size["height"]
+
+    check_fit()
+    initial, overlays = matrix(), page.locator("#auto-overlays").inner_html()
+    automatic_url = image.get_attribute("src")
+    writes = []
+    page.on("request", lambda request: writes.append(request.url) if request.method != "GET" else None)
+    page.locator("#auto-zoom-in").click()
+    assert matrix()[0] == pytest.approx(initial[0] * 1.15, rel=1e-5)
+    page.locator("#auto-zoom-out").click()
+    assert matrix() == pytest.approx(initial, rel=1e-5)
+    box = viewer.bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.wheel(0, -100)
+    page.wait_for_function("node => new DOMMatrix(getComputedStyle(node).transform).a > " + str(initial[0]), arg=layer.element_handle())
+    zoomed = matrix()
+    page.mouse.down()
+    page.mouse.move(x + 45, y + 30, steps=3)
+    page.mouse.up()
+    moved = matrix()
+    assert moved == pytest.approx([zoomed[0], zoomed[1] + 45, zoomed[2] + 30], rel=1e-5)
+    assert viewer.evaluate("node => !node.classList.contains('dragging')")
+
+    with page.expect_response(lambda response: "/image.png?" in response.url and "wc=" in response.url) as windowed:
+        page.locator("#auto-wl-width").evaluate("node => { node.value = 25; node.dispatchEvent(new Event('input')); }")
+        page.locator("#auto-wl-center").evaluate("node => { node.value = 75; node.dispatchEvent(new Event('input')); }")
+    params = parse_qs(urlparse(windowed.value.url).query)
+    lo, hi = record["display_range"]["lo"], record["display_range"]["hi"]
+    assert float(params["wc"][0]) == pytest.approx(lo + 0.75 * (hi - lo))
+    assert float(params["ww"][0]) == pytest.approx(0.25 * (hi - lo))
+    page.wait_for_function("url => document.getElementById('auto-image').src === url", arg=windowed.value.url)
+    assert matrix() == pytest.approx(moved)
+    # The automatic preview may already be in the browser's image cache.
+    page.locator("#auto-wl-reset").click()
+    page.wait_for_function("url => document.getElementById('auto-image').src === url", arg=automatic_url)
+    assert page.locator("#auto-wl-width").input_value() == "100"
+    assert page.locator("#auto-wl-center").input_value() == "50"
+    assert matrix() == pytest.approx(moved)
+    page.locator("#auto-zoom-fit").click()
+    assert matrix() == pytest.approx(initial)
+    assert page.locator("#auto-overlays").inner_html() == overlays
+    assert not writes, "Display controls must never save or edit measuring regions"
+    assert page.locator("#auto-overlays").evaluate("node => node.parentNode === document.getElementById('auto-image').parentNode")
+    page.set_viewport_size({"width": 1100, "height": 700})
+    page.wait_for_function("() => document.getElementById('auto-viewer-layer').getBoundingClientRect().bottom <= document.getElementById('auto-viewer').getBoundingClientRect().bottom")
+    check_fit()
+    # Hidden-tab resizes must not lose the fitted image when returning.
+    page.locator("#tab-analyze").click()
+    page.set_viewport_size({"width": 1280, "height": 800})
+    page.locator("#tab-auto-analyse").click()
+    page.wait_for_function("() => document.getElementById('auto-viewer-layer').getBoundingClientRect().bottom <= document.getElementById('auto-viewer').getBoundingClientRect().bottom")
+    check_fit()
     assert not errors

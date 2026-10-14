@@ -140,10 +140,7 @@ window.addEventListener("resize", resizeCanvas);
 
 function zoomFit() {
   if (!S.imgEl) return;
-  const k = Math.min(canvas.width / S.imgEl.width,
-                     canvas.height / S.imgEl.height) * 0.98;
-  S.view = { k, tx: (canvas.width - S.imgEl.width * k) / 2,
-             ty: (canvas.height - S.imgEl.height * k) / 2 };
+  S.view = ViewerTools.fit(canvas.width, canvas.height, S.imgEl.width, S.imgEl.height);
   draw();
 }
 
@@ -172,21 +169,12 @@ function loadImage(params = "") {
    data, and width can exceed the range so the image can be flattened. */
 function wlAbsolute() {
   const r = (S.reg && S.reg.display_range) || (S.record && S.record.display_range);
-  if (!r) return null;
-  const span = Math.max(r.hi - r.lo, 1e-6);
-  const cPct = +$("#wl-center").value / 100;       // 0..1 across the range
-  const wPct = +$("#wl-width").value / 100;        // 0..1.5 of the range
-  const wc = r.lo + cPct * span;
-  const ww = Math.max(wPct * span, span * 0.01);
-  return { wc, ww };
+  return ViewerTools.windowAbsolute(r, +$("#wl-width").value, +$("#wl-center").value);
 }
 
 function updateWLReadout() {
   const a = wlAbsolute();
-  const value = v => Number(v.toPrecision(5)).toString();
-  $("#wl-readout").textContent = a
-    ? `W ${value(a.ww)}  C ${value(a.wc)}`
-    : "";
+  $("#wl-readout").textContent = ViewerTools.windowLabel(a);
 }
 
 let wlTimer = null;
@@ -436,8 +424,8 @@ canvas.addEventListener("mousemove", (ev) => {
     return;
   }
   if (panning) {
-    S.view.tx = panning.tx + (pos[0] - panning.start[0]);
-    S.view.ty = panning.ty + (pos[1] - panning.start[1]);
+    S.view = ViewerTools.pan({...S.view, tx: panning.tx, ty: panning.ty},
+                            pos[0] - panning.start[0], pos[1] - panning.start[1]);
     draw();
   }
 });
@@ -531,9 +519,7 @@ canvas.addEventListener("wheel", (ev) => {
   ev.preventDefault();
   const f = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
   const pos = [ev.offsetX, ev.offsetY];
-  S.view.tx = pos[0] - (pos[0] - S.view.tx) * f;
-  S.view.ty = pos[1] - (pos[1] - S.view.ty) * f;
-  S.view.k *= f;
+  S.view = ViewerTools.zoomAt(S.view, pos, f);
   draw();
 }, { passive: false });
 

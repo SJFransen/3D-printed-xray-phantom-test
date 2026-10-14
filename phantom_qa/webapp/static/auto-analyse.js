@@ -5,6 +5,19 @@
   if (!page) return;
   const get = id => document.getElementById(id);
   const form = get("auto-upload-form");
+  const viewer = new ViewerTools.ImageViewer({
+    viewport: get("auto-viewer"), layer: get("auto-viewer-layer"), image: get("auto-image"),
+    controls: {
+      width: get("auto-wl-width"), center: get("auto-wl-center"), readout: get("auto-wl-readout"),
+      auto: get("auto-wl-reset"), fit: get("auto-zoom-fit"),
+      zoomIn: get("auto-zoom-in"), zoomOut: get("auto-zoom-out"),
+    },
+    onLoad: () => {
+      get("auto-image-error").classList.add("hidden");
+      get("auto-viewer").classList.remove("hidden");
+    },
+    onError: () => get("auto-image-error").classList.remove("hidden"),
+  });
   let analyses = [], activeIndex = 0, busy = false, labelsLoaded = false;
   const make = (tag, text, className) => {
     const node = document.createElement(tag);
@@ -112,12 +125,13 @@
   function renderOverlays(record) {
     const svg = get("auto-overlays");
     svg.replaceChildren(); svg.setAttribute("viewBox", `0 0 ${record.image.cols} ${record.image.rows}`);
-    const width = Math.max(record.image.cols, record.image.rows) / 500;
+    const radius = Math.max(record.image.cols, record.image.rows) / 125;
     for (const feature of record.features) {
       const color = feature.state === "pass" ? "#65df8b" : "#ffb45c";
       const add = (tag, attrs) => {
         const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-        Object.entries({fill: "none", stroke: color, "stroke-width": width, ...attrs})
+        Object.entries({fill: "none", stroke: color, "stroke-width": 1.4,
+                        "vector-effect": "non-scaling-stroke", ...attrs})
           .forEach(([key, value]) => node.setAttribute(key, value));
         const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
         title.textContent = `${feature.label}: ${feature.state === "pass" ? "PASS" : "Attention required"}`;
@@ -126,7 +140,7 @@
       for (const roi of feature.overlays) {
         if (roi.type === "rect") add("polygon", {points: roi.corners_px.map(p => p.join(",")).join(" ")});
         else if (roi.type === "segment") add("line", {x1: roi.p0_px[0], y1: roi.p0_px[1], x2: roi.p1_px[0], y2: roi.p1_px[1]});
-        else if (roi.type === "point") add("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r: width * 4});
+        else if (roi.type === "point") add("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r: radius});
         else if (roi.type === "circle") add("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r: roi.radius_px});
         else if (roi.type === "annulus") {
           [roi.inner_radius_px, roi.outer_radius_px].forEach(r => add("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r}));
@@ -139,16 +153,11 @@
     activeIndex = index;
     const record = analyses[index];
     get("auto-result").classList.remove("hidden");
-    const img = get("auto-image");
-    const viewer = get("auto-viewer");
     get("auto-image-error").classList.add("hidden");
     // Hide the old image and overlays until the new image has loaded.
-    viewer.classList.add("hidden");
-    img.onload = () => { renderOverlays(record); viewer.classList.remove("hidden"); };
-    img.onerror = () => {
-      get("auto-image-error").classList.remove("hidden");
-    };
-    img.src = `api/analyses/${encodeURIComponent(record.id)}/image.png?scale=1600`;
+    get("auto-viewer").classList.add("hidden");
+    renderOverlays(record);
+    viewer.setScan(record);
     const statuses = get("auto-feature-status"); statuses.replaceChildren();
     for (const feature of record.features) {
       const row = make("li", feature.label,
@@ -161,6 +170,7 @@
 
   get("auto-new-scan").addEventListener("click", () => {
     if (busy) return;
+    viewer.clear();
     get("auto-results-page").classList.add("hidden");
     form.classList.remove("hidden");
     get("auto-file").value = ""; refreshFile();
@@ -174,6 +184,7 @@
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (busy || !form.reportValidity()) return;
+    viewer.clear();
     busy = true;
     const data = new FormData(form);
     for (const key of ["site", "phantom", "operator"]) sessionStorage.setItem("lbl_" + key, data.get(key) || "");
