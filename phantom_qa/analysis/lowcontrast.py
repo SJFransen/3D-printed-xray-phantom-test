@@ -14,7 +14,41 @@ from __future__ import annotations
 import numpy as np
 
 from .common import Ctx, annulus_roi, circle_roi, rect_roi, stats_for_roi
-from .positioning import OutlineMatcher, rectangle_outline, template_for
+from .positioning import OutlineMatcher, project, rectangle_outline, rotation, template_for
+
+
+class _BrightBorderMatcher(OutlineMatcher):
+    """Fine block alignment by summed brightness on the rectangle perimeter.
+
+    A thick bright ridge has two intensity transitions. Scoring the pixels on
+    the outline itself places it on the ridge, rather than on either transition.
+    Contrast against both flanks verifies that a bright border actually exists.
+    """
+
+    def __init__(self, ctx, template):
+        samples = max(21, int(np.ceil(max(template["size_mm"]) / 0.5)))
+        points, normals, sections = rectangle_outline(template["size_mm"], samples)
+        super().__init__(ctx, template, points, normals, sections)
+        width, height = template["size_mm"]
+        self.weights = np.array([height, height, width, width])[sections] * 0.7 / samples
+
+    def score(self, center, angle, level):
+        points = project(self.points, center, angle)
+        if not np.all(self.sample(self.valid, points) > 0.99):
+            return -np.inf
+        return float(self.sample(self.images[level], points) @ self.weights)
+
+    def responses(self, center, angle, level):
+        points = project(self.points, center, angle)
+        normals = self.normals @ rotation(angle).T
+        inside, outside = points - normals * 4.0, points + normals * 4.0
+        coverage = np.minimum(self.sample(self.valid, inside), self.sample(self.valid, outside))
+        image = self.images[level]
+        ridge = self.sample(image, points) - np.maximum(
+            self.sample(image, inside), self.sample(image, outside))
+        return np.array([float(np.mean(ridge[self.sections == side])) / self.noise
+                         if np.all(coverage[self.sections == side] > 0.99) else -np.inf
+                         for side in self.labels])
 
 
 def _refine_block(ctx: Ctx):
@@ -24,6 +58,16 @@ def _refine_block(ctx: Ctx):
     matcher = OutlineMatcher(ctx, template, points, normals, sections, "edge")
     result = matcher.fit(template, required_sections=4)
     return result["center_mm"], result["angle_deg"], result
+
+
+def _refine_bright_border(ctx: Ctx, center, angle):
+    """Small final outline correction, independent of the disc-grid pose."""
+    template = {**template_for(ctx, "lowcontrast/block"),
+                "center_mm": list(center), "angle_deg": float(angle),
+                "search_mm": 3.0, "angle_limit_deg": 3.0}
+    result = _BrightBorderMatcher(ctx, template).fit(template, required_sections=4)
+    result["score_type"] = "perimeter_brightness_sum"
+    return result
 
 
 def propose(ctx: Ctx) -> dict:
@@ -80,11 +124,27 @@ def propose(ctx: Ctx) -> dict:
             "full_circle": circle_roi(ctx, cc, dia,
                                       roi_id=f"lowcontrast/{c['id']}/outline"),
         })
-    block = rect_roi(ctx, center, (lc["size_mm"][0], lc["size_mm"][1]), ang,
+    block_center, block_angle = center, ang
+    grid_shift = [du_med, dv_med]
+    grid_angle_offset = 0.0
+    if detected:
+        border = _refine_bright_border(ctx, center, ang)
+        positioning["bright_border"] = border
+        if border["accepted"]:
+            block_center, block_angle = border["center_mm"], border["angle_deg"]
+            positioning["refined_center_mm"] = block_center
+            positioning["refined_angle_deg"] = block_angle
+            # The bright contour may be offset from the body. Express the
+            # existing disc grid relative to the new outline without moving it.
+            grid_center = np.asarray(center) + du_med * u + dv_med * v
+            grid_shift = ((grid_center - block_center) @ rotation(block_angle)).tolist()
+            grid_angle_offset = float((ang - block_angle + 90) % 180 - 90)
+    block = rect_roi(ctx, block_center, (lc["size_mm"][0], lc["size_mm"][1]), block_angle,
                      roi_id="lowcontrast/block")
-    return {"block": block, "angle_deg": ang, "detected": detected,
+    return {"block": block, "angle_deg": block_angle, "detected": detected,
             "positioning": positioning, "grid_positioning": grid_positioning,
-            "grid_shift_mm": [du_med, dv_med], "circles": circles,
+            "grid_shift_mm": grid_shift, "grid_angle_offset_deg": grid_angle_offset,
+            "circles": circles,
             "bg_ring_mm": [bg_in, bg_out]}
 
 
@@ -126,15 +186,17 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
 
 
 def circles_for_block(ctx: Ctx, center_mm, angle_deg: float,
-                      shift_mm=(0.0, 0.0)) -> list[dict]:
+                      shift_mm=(0.0, 0.0), grid_angle_offset_deg=0.0) -> list[dict]:
     """Rebuild the eight circle ROIs from a block position and angle.
 
     The circles sit on a rigid grid in the block's own frame, so once the user
     has placed the block rectangle correctly every circle follows from it. This
     is what makes the block draggable and rotatable as a whole: one correction
-    instead of eight."""
+    instead of eight. ``shift_mm`` is expressed in the block's frame; the optional
+    angular offset preserves a disc grid fitted independently of its bright
+    enclosing contour."""
     lc = ctx.pdef.lowcontrast
-    a = np.deg2rad(float(angle_deg))
+    a = np.deg2rad(float(angle_deg) + float(grid_angle_offset_deg))
     u = np.array([np.cos(a), np.sin(a)])
     v = np.array([-np.sin(a), np.cos(a)])
     dia = lc["circle_dia_mm"]
@@ -142,11 +204,11 @@ def circles_for_block(ctx: Ctx, center_mm, angle_deg: float,
     bg_in = lc.get("bg_inner_dia_mm", 12.0)
     bg_out = lc.get("bg_outer_dia_mm", 16.0)
     du, dv = float(shift_mm[0]), float(shift_mm[1])
+    grid_center = np.asarray(center_mm, float) + rotation(angle_deg) @ [du, dv]
 
     out = []
     for c in lc["circles"]:
-        cc = (np.asarray(center_mm, float) + (c["u_mm"] + du) * u
-              + (c["v_mm"] + dv) * v)
+        cc = grid_center + c["u_mm"] * u + c["v_mm"] * v
         out.append({
             "id": c["id"], "level": c["level"],
             "roi": circle_roi(ctx, cc, roi_dia, roi_id=f"lowcontrast/{c['id']}"),

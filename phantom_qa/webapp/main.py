@@ -1102,6 +1102,7 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
         lcg["angle_deg"] = angle
         # the grid shift was a refinement of the OLD placement; drop it
         lcg["grid_shift_mm"] = [0.0, 0.0]
+        lcg["grid_angle_offset_deg"] = 0.0
         lcg["circles"] = pipeline.to_jsonable(
             lowcontrast.circles_for_block(ctx, centre, angle))
         for c in lcg["circles"]:

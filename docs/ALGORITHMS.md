@@ -245,11 +245,20 @@ residuals in micrometres and their RMS, and the raw profile for plotting.
 - The projected block outline is fitted for centre and angle using the shared
   structural matcher, preserving the fixed block dimensions.
 - Circle rims are then fitted as one rigid grid, with at most 2.5 mm translation
-  and 4 degrees rotation relative to the block pose. At least three circles must
+  and 4 degrees rotation relative to the coarse block pose. At least three circles must
   provide coherent rim evidence; invisible circles inherit the common pose.
   The grid correction uses edge alignment rather than maximising circle CNR.
 - Per circle: an object ROI of Ø 7 mm and a concentric background annulus
   (Ø 12 → 16 mm), keeping every background tied to its own object.
+- A final rectangle-only refinement searches within 3 mm / 3 degrees for the
+  maximum summed brightness along its straight outline sections. This places
+  the outline through a thick bright border rather than at an intensity
+  transition beside it. All four sides must be brighter than both flanks;
+  absent or clipped bright borders retain the previous placement. The contour
+  may be offset from the feature body's centre. Disc ROIs and CNR measurements
+  are preserved; `grid_shift_mm` and `grid_angle_offset_deg` describe the grid
+  relative to the fitted contour and survive confirmed-layout replay. Manual
+  block placement resets both offsets.
 
 `CNR = (μ_obj − μ_bg) / √(σ_obj² + σ_bg²)` — the guide's formula, signed;
 circles are darker, so values are negative.
