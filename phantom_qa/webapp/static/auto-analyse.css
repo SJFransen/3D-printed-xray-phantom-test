@@ -1,0 +1,44 @@
+/* Optional Auto Analyze styling, scoped to its page. */
+#view-auto-analyse {
+  --auto-green: #65df8b; --auto-orange: #ffb45c;
+  display: block; padding: 20px; overflow: auto;
+}
+#view-auto-analyse .auto-card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 20px; min-width: 0;
+}
+#view-auto-analyse .auto-upload-card { max-width: 760px; margin: 0 auto; }
+#view-auto-analyse h2 { margin: 0 0 12px; font-size: 20px; }
+#view-auto-analyse h3 { font-size: 16px; margin: 22px 0 10px; }
+#view-auto-analyse label { display: grid; gap: 6px; }
+#view-auto-analyse input, #view-auto-analyse select {
+  min-width: 0; max-width: 100%; color: var(--text); background: var(--panel2);
+  border: 1px solid var(--border); border-radius: 5px; padding: 8px;
+}
+#view-auto-analyse .auto-labels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+#view-auto-analyse .drop-zone.armed { border-color: var(--accent); }
+#view-auto-analyse .auto-results-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+#view-auto-analyse .auto-results-toolbar h2 { margin: 0 auto 0 0; }
+#view-auto-analyse .auto-results-toolbar button { margin: 0; }
+#view-auto-analyse .auto-results-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); align-items: start; gap: 20px; }
+#view-auto-analyse .auto-todo { position: sticky; top: 0; }
+#view-auto-analyse .auto-task { margin: 0; padding: 14px 0; border-top: 1px solid var(--border); line-height: 1.6; }
+#view-auto-analyse .auto-task:first-child { border-top: 0; padding-top: 0; }
+#view-auto-analyse .auto-task img { max-width: 100%; }
+#view-auto-analyse .auto-viewer { position: relative; background: #080a0c; margin-top: 14px; }
+#view-auto-analyse #auto-image { display: block; width: 100%; height: auto; }
+#view-auto-analyse #auto-overlays { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#view-auto-analyse .auto-legend { display: flex; gap: 20px; }
+#view-auto-analyse .auto-pass { --auto-status: var(--auto-green); }
+#view-auto-analyse .auto-attention { --auto-status: var(--auto-orange); }
+#view-auto-analyse .auto-legend span { color: var(--auto-status); }
+#view-auto-analyse .auto-feature-status { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; padding: 0; }
+#view-auto-analyse .auto-feature-status li { padding: 9px 12px; border: 2px solid var(--auto-status); border-radius: 6px; }
+#view-auto-analyse #auto-error, #view-auto-analyse #auto-image-error { color: var(--auto-orange); }
+#view-auto-analyse progress { width: 100%; }
+@media (max-width: 850px) {
+  #view-auto-analyse { padding: 12px; }
+  #view-auto-analyse .auto-results-grid, #view-auto-analyse .auto-labels { grid-template-columns: 1fr; }
+  #view-auto-analyse .auto-todo { position: static; }
+  #view-auto-analyse .auto-results-toolbar { flex-wrap: wrap; }
+}

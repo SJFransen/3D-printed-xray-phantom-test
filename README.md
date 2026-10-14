@@ -35,6 +35,7 @@ acted on rather than merely recorded.
 | [docs/MAINTENANCE.md](docs/MAINTENANCE.md) | Backups, integrity checks, re-analysis, logs |
 | [docs/ALGORITHMS.md](docs/ALGORITHMS.md) | How each measurement is computed, and its validation |
 | [docs/DESIGN.md](docs/DESIGN.md) | The main design decisions and why they were taken |
+| [docs/AUTO_ANALYSE.md](docs/AUTO_ANALYSE.md) | Automatic operator workflow, integration points, limitations and safe removal |
 
 ## Requirements
 

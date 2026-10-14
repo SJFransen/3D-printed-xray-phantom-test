@@ -15,13 +15,13 @@ import numpy as np
 from . import ALGO_VERSION
 from .analysis import geometry as geo_mod
 from .analysis import linepairs, lowcontrast, uniformity, wedge
+from .analysis.assessment import TESTS, evaluate_results
 from .analysis.common import Ctx
 from .analysis.positioning import build_templates
 from .ingest import ScanData, protocol_signature
 from .phantom_def import PhantomDef
 from .registration import Registration, register
 
-TESTS = ("geometry", "linepairs", "lowcontrast", "uniformity", "wedge")
 _MODULES = {"geometry": geo_mod, "linepairs": linepairs,
             "lowcontrast": lowcontrast, "uniformity": uniformity,
             "wedge": wedge}
@@ -123,7 +123,8 @@ def compute_all(ctx: Ctx, geometry_all: dict) -> dict:
         if params.get("scan_meta") else None,
         "registration": ctx.reg.summary() if ctx.reg else None,
     }
-    return to_jsonable(out)
+    checked, _ = evaluate_results(geometry_all, to_jsonable(out), ctx.pdef)
+    return to_jsonable(checked)
 
 
 def overall_status(results: dict) -> str:

@@ -5,18 +5,70 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MSF Phantom QA</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="auto-analyse.css">
 </head>
 <body>
 <header>
   <h1>MSF Phantom QA</h1>
   <nav>
-    <button id="tab-analyze" class="tab active">Analyze</button>
+    <button id="tab-auto-analyse" class="tab active">Auto Analyze</button>
+    <button id="tab-analyze" class="tab">Analyze</button>
     <button id="tab-history" class="tab">History &amp; Trends</button>
   </nav>
   <span id="app-status"></span>
 </header>
 
-<main id="view-analyze">
+<main id="view-auto-analyse">
+  <form id="auto-upload-form" class="auto-card auto-upload-card">
+    <h2>New analysis</h2>
+    <p class="hint">DICOM file (preferred), zipped DICOM CD export, or a plain image.</p>
+    <h3>1 · Choose the scan file</h3>
+    <div class="drop-zone" id="auto-drop" role="button" tabindex="0">Drop file here or click to choose</div>
+    <input id="auto-file" name="file" type="file" required class="hidden">
+    <div id="auto-file-chosen" class="chosen hidden"></div>
+    <h3>2 · Identify this scan</h3>
+    <div class="auto-labels">
+      <label>Site <input name="site" list="auto-sites" placeholder="e.g. Goma Hospital"></label>
+      <label>Phantom <input name="phantom" list="auto-phantoms" placeholder="e.g. MSF-01"></label>
+      <label>Operator <input name="operator" placeholder="optional"></label>
+      <label>Notes <input name="notes" placeholder="optional"></label>
+    </div>
+    <datalist id="auto-sites"></datalist><datalist id="auto-phantoms"></datalist>
+    <h3>3 · Confirm</h3>
+    <button id="auto-submit" class="primary" type="submit" disabled>Upload &amp; analyze</button>
+    <button id="auto-clear-file" class="secondary" type="button">Clear file</button>
+    <p id="auto-error" class="hidden" role="alert"></p>
+  </form>
+  <div id="auto-results-page" class="hidden">
+    <div class="auto-results-toolbar">
+      <h2>Results</h2>
+      <button id="auto-new-scan" class="secondary" type="button">New scan</button>
+      <button id="auto-open-analyze" class="secondary" type="button">Open in Analyze</button>
+    </div>
+    <div id="auto-processing" class="auto-card hidden">
+      <p id="auto-progress" role="status" aria-live="polite">Analyzing…</p>
+      <progress id="auto-busy" aria-label="Analysis in progress"></progress>
+    </div>
+    <div id="auto-result" class="auto-results-grid hidden">
+      <section class="auto-card auto-phantom" aria-label="Phantom results">
+        <label id="auto-scan-choice" class="hidden">Scan <select id="auto-scan-select"></select></label>
+        <div class="auto-legend"><span class="auto-pass">● PASS</span><span class="auto-attention">● Attention</span></div>
+        <div id="auto-viewer" class="auto-viewer">
+          <img id="auto-image" alt="Phantom scan with read-only measurement regions">
+          <svg id="auto-overlays" aria-label="Read-only feature status overlays" role="img"></svg>
+        </div>
+        <p id="auto-image-error" class="hidden" role="alert">Preview unavailable.</p>
+        <ul id="auto-feature-status" class="auto-feature-status" aria-label="Feature results"></ul>
+      </section>
+      <aside class="auto-todo auto-card" aria-labelledby="auto-todo-title">
+        <h2 id="auto-todo-title">To Do</h2>
+        <div id="auto-tasks"></div>
+      </aside>
+    </div>
+  </div>
+</main>
+
+<main id="view-analyze" class="hidden">
   <section id="viewer-pane">
     <div id="viewer-toolbar">
       <label title="window width, % of this image's own value range">
@@ -214,5 +266,6 @@
 </main>
 
 <script src="app.js"></script>
+<script src="auto-analyse.js"></script>
 </body>
 </html>

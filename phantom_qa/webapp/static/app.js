@@ -2068,8 +2068,15 @@ async function stageE(c) {
   // Each entry carries what the summary row needs plus the detail behind it,
   // so the two can never disagree about a test's status.
   const cards = [];
-  const card = (key, title, status, headline, html) =>
+  const card = (key, title, status, headline, html) => {
+    const result = res[key === "alignment" ? "geometry" : key] || {};
+    if (result.status === "error" && result.analysis_issues) {
+      status = "error";
+      headline = "analysis incomplete";
+      html += reasonsBlock(result.analysis_issues.map(i => `${i.path}: ${i.detail}`), "error");
+    }
     cards.push({ key, title, status, headline, html });
+  };
 
   /* line pairs */
   const lp = res.linepairs || {};
@@ -2452,6 +2459,8 @@ function drawLpCharts(res) {
 /* ================= history & trends ================= */
 
 function showTab(which) {
+  // Optional panels register through DOM events; Analyze has no dependency on them.
+  document.dispatchEvent(new CustomEvent("phantomqa:tab", { detail: which }));
   $("#tab-analyze").classList.toggle("active", which === "analyze");
   $("#tab-history").classList.toggle("active", which === "history");
   $("#view-analyze").classList.toggle("hidden", which !== "analyze");
@@ -2461,6 +2470,13 @@ function showTab(which) {
 }
 $("#tab-analyze").addEventListener("click", () => showTab("analyze"));
 $("#tab-history").addEventListener("click", () => showTab("history"));
+document.addEventListener("phantomqa:open-analysis", event => {
+  if (typeof event.detail !== "string") return;
+  const aid = event.detail;
+  openAnalysis(aid).then(() => {
+    if (S.aid === aid && S.reg && S.geometry && !signedOff()) setStage("E");
+  }).catch(error => status(error.message, true));
+});
 
 /* current filter + selection state */
 const H = { filter: { site: "", phantom: "", signature: "", validation: "" },

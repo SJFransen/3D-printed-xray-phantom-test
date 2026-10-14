@@ -646,9 +646,23 @@ class Store:
     def new_analysis(self, scan, file_bytes: bytes, signature: str,
                      algo_version: str, pdef_version: str,
                      labels: dict | None = None) -> str:
+        return self._create_analysis(scan, file_bytes, signature, algo_version,
+                                     pdef_version, labels, reuse_existing=False)[0]
+
+    def new_analysis_once(self, scan, file_bytes: bytes, signature: str,
+                          algo_version: str, pdef_version: str,
+                          labels: dict | None = None) -> tuple[str, bool]:
+        """Return (id, created), checking the file hash under the write lock.
+
+        This opt-in operation leaves Analyze's explicit duplicate override
+        unchanged. It also covers simultaneous uploads and repeated ZIP members.
+        """
+        return self._create_analysis(scan, file_bytes, signature, algo_version,
+                                     pdef_version, labels, reuse_existing=True)
+
+    def _create_analysis(self, scan, file_bytes, signature, algo_version,
+                         pdef_version, labels, *, reuse_existing):
         aid = uuid.uuid4().hex[:12]
-        with open(self.upload_path(aid), "wb") as f:
-            f.write(file_bytes)
         lab = {k: str((labels or {}).get(k, "") or "").strip()
                for k in LABEL_FIELDS}
         # The acquisition time comes from the scan itself; it is what the trend
@@ -661,7 +675,16 @@ class Store:
         # which is exactly what the separate upload column exists to fix.
         # Everything downstream already falls back to created_at for ordering.
         acquired = _acquired_at(scan.meta)
-        with self._conn() as c:
+        with self.write_transaction() as c:
+            if reuse_existing:
+                row = c.execute(
+                    "SELECT id FROM analyses WHERE sha256=?"
+                    " ORDER BY (results_json IS NOT NULL) DESC, created_at, id LIMIT 1",
+                    (scan.sha256,)).fetchone()
+                if row:
+                    return row["id"], False
+            with open(self.upload_path(aid), "wb") as f:
+                f.write(file_bytes)
             c.execute(
                 "INSERT INTO analyses (id, created_at, source_name, sha256, kind,"
                 " reduced_precision, signature, meta_json, stage, audit_json,"
@@ -674,7 +697,7 @@ class Store:
                  algo_version, pdef_version, "draft",
                  lab["site"], lab["phantom"], lab["operator"], lab["notes"],
                  acquired))
-        return aid
+        return aid, True
 
     #: The four blobs a record carries that the collection views never read.
     #: geometry_json alone is ~120 kB per analysis.

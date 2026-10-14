@@ -10,6 +10,7 @@ import io
 import logging
 import math
 import os
+import sys
 import time
 
 html_escape = _html.escape
@@ -473,11 +474,8 @@ def _do_register(aid: str, corners_hint=None):
 
 # ------------------------------------------------------------------ endpoints
 
-@app.post("/api/analyses")
-async def upload(request: Request, file: UploadFile = File(...),
-                 site: str = Form(""), phantom: str = Form(""),
-                 operator: str = Form(""), notes: str = Form(""),
-                 allow_duplicate: bool = Form(False)):
+async def _read_upload(request: Request, file: UploadFile):
+    """Shared upload validation/decoding; creates no History records."""
     user, client = _current_user(request), _client_key(request)
     data = await file.read()
     # The middleware caps the DECLARED size, but a chunked upload carries no
@@ -496,6 +494,40 @@ async def upload(request: Request, file: UploadFile = File(...),
         audit("upload", user=user, client=client, outcome="rejected",
               filename=file.filename, error=str(e))
         raise HTTPException(400, f"Could not read file: {e}")
+    return data, scans
+
+
+def _save_upload(scan, data: bytes, labels: dict, request: Request,
+                 *, reuse_existing: bool = False):
+    """Shared source persistence and upload auditing. Returns (id, created)."""
+    args = (scan, scan.source_bytes or data, ingest.protocol_signature(scan.meta),
+            ALGO_VERSION, pdef.version)
+    if reuse_existing:
+        aid, created = store.new_analysis_once(*args, labels=labels)
+    else:
+        aid, created = store.new_analysis(*args, labels=labels), True
+    if created:
+        _scans[aid] = scan
+        store.audit(aid, "A", "uploaded",
+                    {"source": scan.source_name, "kind": scan.kind,
+                     **{k: v for k, v in labels.items() if v}})
+        audit("upload", user=_current_user(request), client=_client_key(request),
+              analysis=aid, filename=scan.source_name, kind=scan.kind,
+              sha256=scan.sha256, bytes=len(data),
+              **{k: v for k, v in labels.items() if v})
+        log.info("uploaded analysis=%s source=%r site=%r phantom=%r sha=%s",
+                 aid, scan.source_name, labels["site"], labels["phantom"],
+                 scan.sha256[:16])
+    return aid, created
+
+
+@app.post("/api/analyses")
+async def upload(request: Request, file: UploadFile = File(...),
+                 site: str = Form(""), phantom: str = Form(""),
+                 operator: str = Form(""), notes: str = Form(""),
+                 allow_duplicate: bool = Form(False)):
+    user, client = _current_user(request), _client_key(request)
+    data, scans = await _read_upload(request, file)
     labels = {"site": site, "phantom": phantom,
               "operator": operator, "notes": notes}
 
@@ -529,20 +561,7 @@ async def upload(request: Request, file: UploadFile = File(...),
         # (CD export) that is the extracted member, NOT the container:
         # storing the container made every integrity check fail, because the
         # recorded sha256 is the member's.
-        aid = store.new_analysis(scan, scan.source_bytes or data,
-                                 ingest.protocol_signature(scan.meta),
-                                 ALGO_VERSION, pdef.version, labels=labels)
-        _scans[aid] = scan
-        store.audit(aid, "A", "uploaded",
-                    {"source": scan.source_name, "kind": scan.kind,
-                     **{k: v for k, v in labels.items() if v}})
-        audit("upload", user=user, client=client, analysis=aid,
-              filename=scan.source_name, kind=scan.kind,
-              sha256=scan.sha256, bytes=len(data),
-              **{k: v for k, v in labels.items() if v})
-        log.info("uploaded analysis=%s source=%r site=%r phantom=%r sha=%s",
-                 aid, scan.source_name, labels["site"], labels["phantom"],
-                 scan.sha256[:16])
+        aid, _ = _save_upload(scan, data, labels, request)
         try:
             reg = _do_register(aid)
             created.append({"id": aid, "source_name": scan.source_name,
@@ -1163,7 +1182,9 @@ def compute_preview(aid: str, body: PreviewBody):
             out[name] = pipeline._MODULES[name].compute(ctx, geom)
         except Exception as e:
             out[name] = {"status": "error", "error": str(e)}
-    return pipeline.to_jsonable(out)
+    from ..analysis.assessment import evaluate_results
+    checked, _ = evaluate_results(rec["geometry"], out, pdef, tests=tuple(out))
+    return pipeline.to_jsonable(checked)
 
 
 class FieldEdgeSet(BaseModel):
@@ -1828,5 +1849,9 @@ def index():
         page = f.read()
     return page.replace("<head>", f'<head>\n<base href="{html_escape(_base_href())}">', 1)
 
+
+# Optional feature: remove these two lines to detach Auto Analyse completely.
+from .auto_analyse import create_router
+app.include_router(create_router(sys.modules[__name__]))
 
 app.mount("/", StaticFiles(directory=_STATIC_DIR, html=False), name="static")
