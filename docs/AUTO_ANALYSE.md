@@ -151,6 +151,16 @@ Optional browser tests require Playwright, Uvicorn and local Chrome or Playwrigh
 Chromium. They skip when unavailable. Reference DICOM tests retain their existing
 skip when sample scans are absent.
 
+Validation on 14 October 2026:
+
+- Full suite: **794 passed, 35 skipped, 1 pre-existing failure**; 36 subtests passed.
+- Focused workflow, parity, browser and frontend checks: **93 passed**, including
+  all three real Chrome tests.
+- All three existing JavaScript suites, frontend syntax checks and
+  `git diff --check` passed.
+- The two saved cases exhibiting the original line-pair mismatch both return
+  PASS under the corrected check. This verification did not rewrite their records.
+
 The existing `tests/test_manual_adjustment.py::test_wedge_roi_pixel_counts_match`
 failure was reproduced against the original commit with the same Python 3.12,
 NumPy 2.2.6 and SciPy 1.13.1 environment: 4830 versus 4900 pixels in synthetic wedge
