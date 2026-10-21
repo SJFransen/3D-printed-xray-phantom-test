@@ -6,6 +6,11 @@ a scan, enter optional site/phantom/operator/notes, then press **Upload & analyz
 The page switches to processing and then a simplified results screen with a
 read-only phantom viewer and To Do panel. **New scan** returns to upload.
 
+The app page serves scripts and styles with content fingerprints in their URLs.
+HTML is not cached; scripts/styles revalidate with the server. This prevents
+cached upload controllers from an older release leaving the shared form blank
+after an update. Fingerprints update on page load without a frontend build.
+
 The viewer fits the full scan into the available screen height. Its **W** (window
 width), **C** (window center), **auto** and **fit** controls use Analyze's image
 rendering and shared view calculations. Scroll or use **+ / −** to zoom; drag the
@@ -251,3 +256,12 @@ Validation on 21 October 2026 for shared uploads and audited corrections:
 - Final browser/frontend run: **26 passed**, including all five Chrome workflows.
   All five JavaScript suites and syntax checks passed. Desktop and mobile renders
   were inspected; ROI outlines retain a readable screen thickness while zooming.
+
+Upload cache regression fix on 21 October 2026:
+
+- **313 relevant checks passed**: 304 authorization, frontend, automatic workflow
+  and correction checks, plus three asset-delivery checks and six Chrome workflows.
+- The new browser test reproduces blank forms with cached older controllers,
+  then verifies both file choosers and an Analyze upload after the fix.
+- The restarted local app was checked in Chrome on desktop and mobile. Both
+  upload forms render without browser errors; no saved scan was changed.

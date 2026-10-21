@@ -6,10 +6,12 @@ Run with:  python run_app.py   (or: uvicorn phantom_qa.webapp.main:app)
 from __future__ import annotations
 
 import html as _html
+import hashlib
 import io
 import logging
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -205,8 +207,11 @@ async def security_middleware(request: Request, call_next):
     if cfg.https_only:
         response.headers["Strict-Transport-Security"] = \
             "max-age=31536000; includeSubDomains"
-    if path.startswith("/api/"):
+    if path.startswith("/api/") or path in ("/", "/index.html", "/login"):
         response.headers["Cache-Control"] = "no-store"
+    elif path.endswith((".js", ".css")):
+        # Revalidate even unversioned URLs retained by older open tabs.
+        response.headers["Cache-Control"] = "private, no-cache"
     return response
 
 
@@ -1945,9 +1950,22 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 @app.get("/", response_class=HTMLResponse)
 def index():
     """index.html with the mount prefix injected, so the single-page app builds
-    its URLs correctly whether it is served from / or from /x-ray/."""
+    its URLs correctly whether it is served from / or from /x-ray/.
+
+    Fingerprint local scripts/styles so cached controllers from a previous
+    release cannot initialise a different upload template. Read the current
+    files on each page load, including during development without a build step.
+    """
     with open(os.path.join(_STATIC_DIR, "index.html"), encoding="utf-8") as f:
         page = f.read()
+
+    def version_asset(match):
+        attribute, name = match.groups()
+        with open(os.path.join(_STATIC_DIR, name), "rb") as asset:
+            version = hashlib.sha256(asset.read()).hexdigest()[:16]
+        return f'{attribute}="{name}?v={version}"'
+
+    page = re.sub(r'(src|href)="([A-Za-z0-9_-]+\.(?:js|css))"', version_asset, page)
     return page.replace("<head>", f'<head>\n<base href="{html_escape(_base_href())}">', 1)
 
 

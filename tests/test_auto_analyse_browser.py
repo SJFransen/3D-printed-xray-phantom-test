@@ -19,7 +19,31 @@ from test_authorization import USER_PW
 
 
 @pytest.fixture
-def browser_page(mod, algorithms):
+def legacy_upload_cache(mod):
+    """Prime a real browser cache with controllers from before shared uploads."""
+    from fastapi.responses import HTMLResponse, Response
+
+    state = {"priming": False, "legacy_requests": 0}
+
+    @mod.app.middleware("http")
+    async def previous_release(request, call_next):
+        if request.url.path == "/prime-upload-cache":
+            return HTMLResponse('<input id="auto-file" type="file">'
+                                '<script src="app.js"></script>'
+                                '<script src="auto-analyse.js"></script>')
+        if state["priming"] and request.url.path in ("/app.js", "/auto-analyse.js"):
+            state["legacy_requests"] += 1
+            # Earlier controllers bound directly to fields in the old markup.
+            return Response('document.getElementById("auto-file").addEventListener("change", () => {});',
+                            media_type="application/javascript",
+                            headers={"Cache-Control": "private, max-age=3600"})
+        return await call_next(request)
+
+    return state
+
+
+@pytest.fixture
+def browser_page(mod, algorithms, legacy_upload_cache):
     sync_api = pytest.importorskip("playwright.sync_api")
     uvicorn = pytest.importorskip("uvicorn")
     sock = socket.socket()
@@ -63,6 +87,34 @@ def send_scan(page, seed=0):
     page.locator("#auto-submit").click()
     page.locator("#auto-result").wait_for(state="visible")
     page.locator("#auto-viewer").wait_for(state="visible")
+
+
+def test_browser_upload_forms_survive_cached_controllers_from_previous_release(browser_page, legacy_upload_cache):
+    page, errors = browser_page
+    origin = page.url.rstrip("/")
+    session = page.context.new_cdp_session(page)
+    session.send("Network.clearBrowserCache")
+    session.detach()
+    legacy_upload_cache["priming"] = True
+    page.goto(origin + "/prime-upload-cache")
+    assert legacy_upload_cache["legacy_requests"] == 2
+    legacy_upload_cache["priming"] = False
+    page.goto(origin + "/")
+    page.locator("#auto-drop").wait_for(state="visible", timeout=3000)
+    assert page.locator("#auto-site").is_visible()
+    with page.expect_file_chooser() as chosen:
+        page.locator("#auto-drop").click()
+    chosen.value.set_files({"name": "scan.png", "mimeType": "image/png", "buffer": png()})
+    assert page.locator("#auto-submit").is_enabled()
+    page.locator("#tab-analyze").click()
+    page.locator("#drop").wait_for(state="visible")
+    with page.expect_file_chooser() as chosen:
+        page.locator("#drop").click()
+    chosen.value.set_files({"name": "scan.png", "mimeType": "image/png", "buffer": png(1)})
+    assert page.locator("#btn-upload").is_enabled()
+    page.locator("#btn-upload").click()
+    page.locator('#stage-nav li.active[data-stage="A"]').wait_for(state="visible")
+    assert not errors
 
 
 def test_browser_upload_pass_viewer_tasks_and_navigation(browser_page):
