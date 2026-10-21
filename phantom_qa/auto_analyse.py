@@ -7,14 +7,13 @@ presenting their verdicts. Technical attention is distinct from a QA failure.
 from __future__ import annotations
 
 import calendar
+import copy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
-from . import ALGO_VERSION, pipeline
-from .ingest import protocol_signature
+from . import pipeline
 
-from .analysis.assessment import (LABELS, SIDES, assess_features, collect_overlays,
-                                 evaluate_results)
+from .analysis.assessment import LABELS, SIDES, assess_features, collect_overlays
 
 
 @dataclass
@@ -61,57 +60,46 @@ def generate_tasks(aid, uploaded_at, features, duplicate):
     affected = [f for f in features if f["state"] != "pass"]
     if affected:
         if duplicate:
+            names = []
+            for feature in affected:
+                if feature["id"] == "geometry":
+                    paths = " ".join(issue["path"] for issue in feature.get("issues", []))
+                    if "field" in paths:
+                        names.append("X-ray field alignment")
+                    if any(part in paths for part in ("dimension", "ruler", "scale", "corner")):
+                        names.append("Dimensions")
+                    if not names:
+                        names.append("Geometry")
+                else:
+                    names.append(LABELS[feature["id"]])
+            tests = ", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else names[0]
             tasks.append(Task(f"{aid}:contact_technician", "contact_technician",
                               "Contact the MSF technician",
-                              "Contact the MSF technician.", priority="high"))
+                              f"Contact the MSF technician about {tests}.", priority="high"))
         else:
             tasks.append(Task(f"{aid}:repeat_scan", "repeat_scan", "Repeat the phantom scan once",
                               "Repeat the phantom scan once and upload the new scan.", priority="high"))
     return [asdict(t) for t in tasks]
 
 
-def run_automatic(scan, pdef):
-    """Run the existing pipeline with untouched automatic proposals only."""
-    reg, geometry, results = None, {}, {}
-    try:
-        reg = pipeline.run_stage_a(scan, pdef)
-        ctx = pipeline.build_ctx(scan, pdef, reg, {"scan_meta": scan.meta, "sid_mm": 1000.0})
-        geometry = pipeline.propose_all(ctx)
-        results = pipeline.compute_all(ctx, geometry)
-    except Exception as exc:
-        detail = f"{type(exc).__name__}: {exc}"
-        geometry = geometry if isinstance(geometry, dict) else {}
-        results = results if isinstance(results, dict) else {}
-        for name in pipeline.TESTS:
-            geometry.setdefault(name, {"_error": detail})
-            results.setdefault(name, {"status": "error", "error": detail})
-    geometry = pipeline.to_jsonable(geometry)
-    results = pipeline.to_jsonable(results)
-    if all(isinstance(results.get(name), dict) and "_assessment" in results[name]
-           for name in pipeline.TESTS):
-        # Consume the pipeline's verdict once, exactly as Analyze receives it.
-        features = [{**results[name]["_assessment"],
-                     "overlays": collect_overlays(geometry.get(name) or {})}
+def result_payload(record, pdef, duplicate, *, saved):
+    """Render the persisted record, including manual corrections, without recomputing."""
+    geometry, results = record.get("geometry") or {}, record.get("results") or {}
+    if all(isinstance(results.get(name), dict) and "_assessment" in results[name] for name in pipeline.TESTS):
+        features = [{**results[name]["_assessment"], "overlays": collect_overlays(geometry.get(name) or {})}
                     for name in pipeline.TESTS]
     else:
-        results, features = evaluate_results(geometry, results, pdef)
-    results.setdefault("_meta", {}).update({"algo_version": ALGO_VERSION,
-        "signature": protocol_signature(scan.meta), "workflow": "auto_analyse", "manually_reviewed": False})
-    return {"reg": pipeline.registration_to_dict(reg) if reg else None,
-            "geometry": geometry, "results": results, "features": features,
-            "status": pipeline.overall_status(results)}
-
-
-def result_payload(record, automatic, duplicate, *, saved):
-    features = automatic["features"]
+        # Legacy results remain stored as originally computed; no fresh measurement is invented.
+        features = assess_features(geometry, copy.deepcopy(results), pdef)
     all_pass = all(f["state"] == "pass" for f in features)
     return {"id": record["id"], "source_name": record["source_name"],
             "created_at": record.get("created_at"), "duplicate": duplicate,
             "saved": saved, "history_record_unchanged": duplicate,
-            "overall": "pass" if all_pass else "attention", "status": automatic["status"],
+            "overall": "pass" if all_pass else "attention", "status": record.get("status"),
             "message": "All features passed. No further action required." if all_pass
                        else "One or more features need attention.",
-            "features": features, "results": automatic["results"],
+            "features": features, "results": results,
+            **{key: record.get(key, "") for key in ("site", "phantom", "operator", "notes")},
             "tasks": generate_tasks(record["id"], record.get("created_at"), features, duplicate),
             "validation_status": "", "manually_reviewed": False,
             "history_validation_status": record.get("validation_status") or ""}

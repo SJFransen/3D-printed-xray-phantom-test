@@ -3,7 +3,7 @@
 One row per analysis. The original upload bytes are kept on disk
 (data/uploads/<id>.bin) for traceability and re-analysis.
 
-Two side tables hang off it:
+Side tables retain edits, saved layouts and durable revisions:
 
 ``geometry_history``  one compressed snapshot per measuring-point edit, so
                       Stage C can offer undo / redo / reset without the user
@@ -13,6 +13,8 @@ Two side tables hang off it:
                       phantom-frame millimetres, which is why it replays
                       correctly onto a scan where the phantom lay at a
                       different angle on the detector.
+``analysis_revisions`` full record snapshots and finalized HTML reports, retained
+                       independently of undo limits and History scan counts.
 """
 
 from __future__ import annotations
@@ -83,6 +85,17 @@ CREATE TABLE IF NOT EXISTS phantom_profiles (
   created_at TEXT DEFAULT '',
   updated_at TEXT DEFAULT '',
   updated_by TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS analysis_revisions (
+  analysis_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  user TEXT DEFAULT '',
+  action TEXT NOT NULL,
+  snapshot_z BLOB NOT NULL,
+  report_html TEXT,
+  PRIMARY KEY (analysis_id, revision)
 );
 """
 
@@ -356,6 +369,7 @@ class Store:
         Leaving them would show a report whose overlay comes from the new ROIs
         and whose numbers come from the old ones."""
         if invalidate_results:
+            Store._archive_record(c, aid, "before geometry change", results_only=True)
             c.execute(
                 "UPDATE analyses SET geometry_json=?, geometry_seq=?,"
                 " results_json=NULL, status='draft' WHERE id=?",
@@ -806,17 +820,97 @@ class Store:
                 cols.append(f"{k}=?")
                 vals.append(v)
         vals.append(aid)
-        with self._conn() as c:
+        with self.write_transaction() as c:
+            if any(k in fields for k in ("reg", "geometry", "results")):
+                self._archive_record(c, aid, "before analysis change", results_only=True)
             c.execute(f"UPDATE analyses SET {', '.join(cols)} WHERE id=?", vals)
 
-    def audit(self, aid: str, stage: str, action: str, detail=None):
+    @staticmethod
+    def _archive_record(c, aid, action, user="", *, results_only=False):
+        """Durable revisions are separate from the bounded undo stack and trends."""
+        row = c.execute("SELECT * FROM analyses WHERE id=?", (aid,)).fetchone()
+        if row is None or (results_only and not row["results_json"]):
+            return None
+        record = dict(row)
+        for key in ("meta", "reg", "geometry", "results", "audit"):
+            raw = record.pop(key + "_json")
+            try:
+                record[key] = json.loads(raw) if raw else None
+            except (TypeError, ValueError):
+                record[key] = None
+        revision = c.execute(
+            "SELECT COALESCE(MAX(revision),0)+1 FROM analysis_revisions WHERE analysis_id=?",
+            (aid,)).fetchone()[0]
+        c.execute("INSERT INTO analysis_revisions (analysis_id,revision,created_at,user,action,snapshot_z)"
+                  " VALUES (?,?,?,?,?,?)", (aid, revision, time.strftime("%Y-%m-%d %H:%M:%S"),
+                                            user, action, Store._pack(record)))
+        return revision
+
+    def revisions(self, aid):
+        with self._conn() as c:
+            return [dict(row) for row in c.execute(
+                "SELECT revision,created_at,user,action,(report_html IS NOT NULL) AS has_report"
+                " FROM analysis_revisions WHERE analysis_id=? ORDER BY revision DESC", (aid,))]
+
+    def revision(self, aid, revision):
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM analysis_revisions WHERE analysis_id=? AND revision=?",
+                            (aid, revision)).fetchone()
+        if row is None:
+            return None
+        return {**dict(row), "record": self._unpack(row["snapshot_z"]), "snapshot_z": None}
+
+    def save_revision_report(self, aid, revision, html):
+        with self._conn() as c:
+            c.execute("UPDATE analysis_revisions SET report_html=COALESCE(report_html,?)"
+                      " WHERE analysis_id=? AND revision=?", (html, aid, revision))
+
+    def save_computation(self, aid, expected, results, status, sid_mm, *, user=""):
+        """Commit only if the geometry, registration and ruling still match the input."""
+        with self.write_transaction() as c:
+            row = c.execute("SELECT * FROM analyses WHERE id=?", (aid,)).fetchone()
+            if row is None:
+                raise KeyError(aid)
+            if row["validation_status"]:
+                raise ValueError("This analysis has been signed off. Withdraw validation before recomputing.")
+            for key in ("reg", "geometry"):
+                if json.loads(row[key + "_json"] or "null") != expected.get(key):
+                    raise ValueError("Measuring positions changed during computation. Run the analysis again.")
+            if row["sid_mm"] != expected.get("sid_mm"):
+                raise ValueError("SID changed during computation. Run the analysis again.")
+            self._archive_record(c, aid, "before recompute", user, results_only=True)
+            meta = results.get("_meta") or {}
+            c.execute("UPDATE analyses SET results_json=?,status=?,sid_mm=?,stage='F',"
+                      " algo_version=COALESCE(?,algo_version),pdef_version=COALESCE(?,pdef_version) WHERE id=?",
+                      (json.dumps(results), status, sid_mm, meta.get("algo_version"), meta.get("pdef_version"), aid))
+            self._archive_record(c, aid, "computed", user)
+
+    def fill_missing_labels(self, aid, labels):
+        """An explicit re-upload may fill blanks; existing labels and rulings win."""
+        changed = {}
+        with self.write_transaction() as c:
+            row = c.execute("SELECT * FROM analyses WHERE id=?", (aid,)).fetchone()
+            if row is None or row["validation_status"]:
+                return changed
+            for key in LABEL_FIELDS:
+                value = str(labels.get(key) or "").strip()
+                if value and not str(row[key] or "").strip():
+                    if key == "phantom" and row["is_baseline"]:
+                        continue  # moving a reference's scope is an explicit label edit
+                    changed[key] = value
+            if changed:
+                self._archive_record(c, aid, "before identification update")
+                c.execute("UPDATE analyses SET " + ",".join(f"{key}=?" for key in changed) + " WHERE id=?",
+                          [*changed.values(), aid])
+        return changed
+
+    def audit(self, aid: str, stage: str, action: str, detail=None, *, user=""):
         """Append one entry to the record's own audit trail.
 
-        Reads ONLY the trail column — this runs on every edit, and it used to
-        deserialise the whole record (a quarter-megabyte of JSON) to append
-        one line. The append runs under the write lock, because two concurrent
-        edits both doing read-append-write outside it could lose one
-        another's line even though the edits themselves were serialised."""
+        Append under the write lock so overlapping edits cannot lose notes.
+        Archive the resulting full record in the same transaction; this durable
+        audit history is independent of the bounded measuring-point undo stack.
+        """
         with self.write_transaction() as c:
             row = c.execute("SELECT audit_json FROM analyses WHERE id=?",
                             (aid,)).fetchone()
@@ -837,9 +931,10 @@ class Store:
             if not isinstance(trail, list):
                 trail = []
             trail.append({"ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-                          "stage": stage, "action": action, "detail": detail})
+                          "stage": stage, "action": action, "detail": detail, "user": user})
             c.execute("UPDATE analyses SET audit_json=? WHERE id=?",
                       (json.dumps(trail), aid))
+            return self._archive_record(c, aid, f"{stage}: {action}", user)
 
     def list_all(self, site: str | None = None, phantom: str | None = None,
                  signature: str | None = None, validation: str | None = None,
@@ -1045,6 +1140,7 @@ class Store:
             label = self.profile_key(row["phantom"]) if row else ""
             c.execute("DELETE FROM analyses WHERE id=?", (aid,))
             c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
+            c.execute("DELETE FROM analysis_revisions WHERE analysis_id=?", (aid,))
             pruned = self._prune_profile(c, label)
         p = self.upload_path(aid)
         if os.path.exists(p):

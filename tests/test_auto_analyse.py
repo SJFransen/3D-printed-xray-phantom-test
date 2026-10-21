@@ -41,16 +41,16 @@ def passing(pdef):
                                     "central_line_from_edge_mm": 20., "linearity_rms_mm": 0.01} for s in auto.SIDES},
                      "field_alignment": {s: {"detected": True, "status": "pass", "pct_of_sid": 0.,
                                              "deviation_from_central_line_mm": 0.} for s in auto.SIDES}},
-        "linepairs": {"status": "pass", "rows": [{"id": g["id"], "mean": 100., "std": 5., "n": 100,
+        "linepairs": {"status": "pass", "rows": [{"id": g["id"], "freq_lp_mm": g.get("freq_lp_mm", 1.), "mean": 100., "std": 5., "n": 100,
                       "status": "pass", "linearity": {"measured_pitch_mm": 1., "pitch_dev_pct": 0., "residual_rms_mm": 0.01}}
                       for g in pdef.linepairs["groups"]]},
-        "lowcontrast": {"status": "pass", "ordering_ok": True, "rows": [{"id": c["id"], "obj_mean": 100., "obj_std": 5.,
+        "lowcontrast": {"status": "pass", "ordering_ok": True, "rows": [{"id": c["id"], "level": c.get("level", 1), "obj_mean": 100., "obj_std": 5.,
                         "obj_n": 100, "bg_mean": 80., "bg_std": 5., "bg_n": 100, "cnr": 2., "abs_cnr": 2.}
                         for c in pdef.lowcontrast["circles"]]},
         "uniformity": {"status": "pass", "snr_avg": 20., "mean_avg": 100., "max_abs_dsnr_pct": 0.,
                        "rows": [{"id": s["id"], "status": "pass", "mean": 100., "std": 5., "n": 100,
                                  "snr": 20., "dsnr_pct": 0., "dmean_pct": 0.} for s in pdef.uniformity["squares"]]},
-        "wedge": {"status": "pass", "fit": {"r2": 1., "slope": 10.}, "span": 100., "dynamic_range_ratio": 2.,
+        "wedge": {"status": "pass", "fit": {"r2": 1., "slope": 10., "intercept": 0.}, "span": 100., "dynamic_range_ratio": 2.,
                   "monotonic": True, "saturated": False,
                   "rows": [{"step": s["step"], "mean": 100., "std": 5., "n": 100, "saturated": False} for s in pdef.wedge["steps"]]},
         "_meta": {"algo_version": ALGO_VERSION},
@@ -165,7 +165,8 @@ def test_duplicate_aware_tasks(duplicate, expected, absent, passing, pdef):
     features = auto.assess_features(geometry, results, pdef)
     tasks = auto.generate_tasks("a", "2026-10-15", features, duplicate)
     assert expected in [t["type"] for t in tasks] and absent not in [t["type"] for t in tasks]
-    assert "Uniformity" not in next(t for t in tasks if t["type"] == expected)["description"]
+    description = next(t for t in tasks if t["type"] == expected)["description"]
+    assert ("Uniformity" in description) is duplicate
     assert not any(t["related_feature"] or t["steps"] for t in tasks)
     assert len({t["id"] for t in tasks}) == len(tasks)
     assert "analysis_attention" not in [t["type"] for t in tasks]
@@ -209,7 +210,6 @@ def algorithms(monkeypatch, passing):
     shared_compute = pipeline.compute_all
     def compute(ctx, positions):
         calls.append("compute")
-        assert positions == geometry  # no stored profile or manual layout applied
         return shared_compute(ctx, positions)
     monkeypatch.setattr(pipeline, "run_stage_a", register)
     monkeypatch.setattr(pipeline, "propose_all", propose)
@@ -260,7 +260,7 @@ def test_identical_orange_reupload_preserves_signed_record(client, mod, algorith
     assert "repeat_scan" not in [t["type"] for t in second["tasks"]]
     assert len(mod.store.list_all()) == 1
     assert mod.store.get(first["id"]) == before
-    assert algorithms == ["register", "propose", "compute"] * 2
+    assert algorithms == ["register", "propose", "compute"]
 
 
 def test_new_scan_same_labels_is_independent(client, mod, algorithms, passing):
@@ -434,4 +434,4 @@ def test_manual_position_corrections_are_respected_by_shared_checks(passing, pde
 def test_auto_routes_are_optional(mod):
     from phantom_qa.webapp.auto_analyse import create_router
     isolated = create_router(mod)
-    assert {route.path for route in isolated.routes} == {"/api/auto-analyse"}
+    assert {route.path for route in isolated.routes} == {"/api/auto-analyse", "/api/auto-analyse/{aid}"}

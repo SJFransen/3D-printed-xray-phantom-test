@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const images = [], timers = new Map();
 let timerId = 0, loads = 0, errors = 0;
 const node = () => ({
-  style: {}, handlers: {}, classList: {add() {}, remove() {}},
+  style: {setProperty(name, value) { this[name] = value; }}, handlers: {}, classList: {add() {}, remove() {}},
   addEventListener(name, callback) { this.handlers[name] = callback; },
 });
 const viewport = Object.assign(node(), {clientWidth: 500, clientHeight: 400});
@@ -41,6 +41,7 @@ assert.equal(errors, 0);
 currentScan.onload();
 assert.equal(image.src, 'http://local/qa/api/analyses/new/image.png?scale=1600');
 assert.equal(viewer.view.k, 2.45);
+assert.ok(Math.abs(parseFloat(layer.style['--viewer-stroke']) * viewer.view.k - 1.4) < 1e-10);
 assert.ok(Math.abs(viewer.view.tx - 5) < 1e-10);
 assert.ok(Math.abs(viewer.view.ty - 77.5) < 1e-10);
 viewer.zoom(1.15); const zoomed = {...viewer.view};

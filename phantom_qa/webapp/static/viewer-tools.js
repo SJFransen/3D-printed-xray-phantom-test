@@ -128,6 +128,7 @@
     apply() {
       const {k, tx, ty} = this.view;
       this.layer.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
+      this.layer.style.setProperty("--viewer-stroke", `${1.4 / k}px`);
     }
 
     fit() {

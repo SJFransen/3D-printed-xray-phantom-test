@@ -11,9 +11,11 @@ import logging
 import math
 import os
 import sys
+import threading
 import time
 
 html_escape = _html.escape
+_report_lock = threading.RLock()
 
 import numpy as np
 from fastapi import (FastAPI, File, Form, HTTPException, Request, Response,
@@ -459,7 +461,8 @@ def _reg_payload(aid: str, reg: Registration) -> dict:
 
 def _do_register(aid: str, corners_hint=None):
     scan = _scan(aid)
-    reg = pipeline.run_stage_a(scan, pdef, corners_hint=corners_hint)
+    reg = (pipeline.run_stage_a(scan, pdef) if corners_hint is None
+           else pipeline.run_stage_a(scan, pdef, corners_hint=corners_hint))
     store.update(aid, reg=pipeline.to_jsonable({
         "transform": reg.transform.to_dict(),
         "corners_px": reg.corners_px,
@@ -506,11 +509,16 @@ def _save_upload(scan, data: bytes, labels: dict, request: Request,
         aid, created = store.new_analysis_once(*args, labels=labels)
     else:
         aid, created = store.new_analysis(*args, labels=labels), True
+    if not created:
+        changed = store.fill_missing_labels(aid, labels)
+        if changed:
+            store.audit(aid, "A", "missing identification supplied on re-upload", changed,
+                        user=_current_user(request))
     if created:
         _scans[aid] = scan
         store.audit(aid, "A", "uploaded",
                     {"source": scan.source_name, "kind": scan.kind,
-                     **{k: v for k, v in labels.items() if v}})
+                     **{k: v for k, v in labels.items() if v}}, user=_current_user(request))
         audit("upload", user=_current_user(request), client=_client_key(request),
               analysis=aid, filename=scan.source_name, kind=scan.kind,
               sha256=scan.sha256, bytes=len(data),
@@ -564,6 +572,7 @@ async def upload(request: Request, file: UploadFile = File(...),
         aid, _ = _save_upload(scan, data, labels, request)
         try:
             reg = _do_register(aid)
+            store.audit(aid, "A", "registered", user=_current_user(request))
             created.append({"id": aid, "source_name": scan.source_name,
                             "registered": True,
                             "phantom_profile": stored_layout,
@@ -681,7 +690,7 @@ def set_labels(aid: str, body: LabelBody, request: Request):
         raise HTTPException(404, "not found")   # deleted while we were editing
     store.audit(aid, "F", "labels edited",
                 {**fields, "layout_deleted": out.get("profile_deleted", False),
-                 "baseline_demoted": out.get("baseline_demoted", False)})
+                 "baseline_demoted": out.get("baseline_demoted", False)}, user=_current_user(request))
     audit("labels", user=_current_user(request), client=_client_key(request),
           analysis=aid, before=before, after=fields,
           layout_deleted=out.get("profile_deleted", False))
@@ -787,12 +796,12 @@ def re_register(aid: str, body: CornersBody):
         reg = _do_register(aid, corners_hint=hint)
     except Exception as e:
         raise HTTPException(400, f"registration failed: {e}")
-    store.audit(aid, "A", "re-registered",
-                {"manual_corners": body.corners_px is not None})
     # Geometry proposals are expressed in pixels derived from the transform, so
     # a new transform invalidates them — and every undo state built on top.
     store.update(aid, geometry=None, results=None, stage="A", geometry_seq=0)
     store.clear_geometry_history(aid)
+    store.audit(aid, "A", "re-registered",
+                {"manual_corners": body.corners_px is not None}, user=_current_user(request))
     return _reg_payload(aid, reg)
 
 
@@ -836,7 +845,7 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
         store.set_geometry_baseline(aid, geom, action="propose", user=user)
     except KeyError:
         raise HTTPException(404, "not found")   # deleted while proposing
-    store.audit(aid, "B", "proposals generated")
+    store.audit(aid, "B", "proposals generated", user=user)
 
     want = (body.use_profile if body.use_profile is not None
             else (rec.get("layout_source") or "") != "auto")
@@ -850,12 +859,12 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
                                    detail={"phantom": prof["phantom_key"]})
             applied = True
             store.audit(aid, "B", "stored phantom layout applied",
-                        {"phantom": prof["phantom_key"], **report})
+                        {"phantom": prof["phantom_key"], **report}, user=user)
         else:
             log.warning("stored layout for phantom=%r refused on analysis=%s: %s",
                         prof["phantom_key"], aid, check["reason"])
             store.audit(aid, "B", "stored phantom layout refused",
-                        {"phantom": prof["phantom_key"], **check})
+                        {"phantom": prof["phantom_key"], **check}, user=user)
 
     store.update(aid, stage="B", layout_source=("profile" if applied else "auto"))
     return pipeline.to_jsonable({
@@ -965,7 +974,7 @@ def move_roi(aid: str, body: RoiMove, request: Request):
         raise HTTPException(404, "analysis not found")
 
     store.audit(aid, "C", "roi moved",
-                {"roi": body.roi_id, "from_mm": old_center, "to_mm": new_center})
+                {"roi": body.roi_id, "from_mm": old_center, "to_mm": new_center}, user=_current_user(request))
     return pipeline.to_jsonable({"roi": node,
                                  "stats": _roi_stats_or_none(ctx, node),
                                  "changed": changed, "history": hist})
@@ -1047,7 +1056,7 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
 
     store.audit(aid, "C", "roi rotated",
                 {"roi": body.roi_id, "from_deg": old_angle,
-                 "to_deg": body.angle_deg})
+                 "to_deg": body.angle_deg}, user=_current_user(request))
     return pipeline.to_jsonable({"roi": node,
                                  "stats": _roi_stats_or_none(ctx, node),
                                  "changed": changed, "history": hist})
@@ -1137,7 +1146,7 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
 
     store.audit(aid, "C", "low-contrast block placed",
                 {"center_mm": centre, "angle_deg": angle,
-                 "by": "corners" if body.corners_px else "drag"})
+                 "by": "corners" if body.corners_px else "drag"}, user=_current_user(request))
     return pipeline.to_jsonable({"lowcontrast": lcg,
                                  "center_mm": centre, "angle_deg": angle,
                                  "history": hist})
@@ -1168,8 +1177,7 @@ def compute_preview(aid: str, body: PreviewBody):
     rec = store.get(aid)
     if not rec or not rec.get("geometry"):
         raise HTTPException(400, "no geometry yet")
-    store.update(aid, sid_mm=body.sid_mm)
-    ctx = _ctx(aid)
+    ctx = _ctx(aid, {**rec, "sid_mm": body.sid_mm})
     out = {}
     for name in body.tests:
         if name not in pipeline.TESTS:
@@ -1247,7 +1255,7 @@ def set_field_edge(aid: str, body: FieldEdgeSet, request: Request):
     except KeyError:
         raise HTTPException(404, "analysis not found")
     store.audit(aid, "C", "field edge set manually",
-                {"side": body.side, "offset_mm": offset})
+                {"side": body.side, "offset_mm": offset}, user=_current_user(request))
     return {**entry, "history": hist}
 
 
@@ -1281,7 +1289,7 @@ def geometry_undo(aid: str, request: Request):
         out = store.undo_geometry(aid)
     except LookupError as e:
         raise HTTPException(409, str(e))
-    store.audit(aid, "C", "undo", {"to_seq": out["seq"]})
+    store.audit(aid, "C", "undo", {"to_seq": out["seq"]}, user=_current_user(request))
     source = _layout_source_of(out["geometry"])
     store.update(aid, layout_source=source)
     return pipeline.to_jsonable({"geometry": out.pop("geometry"),
@@ -1298,7 +1306,7 @@ def geometry_redo(aid: str, request: Request):
         out = store.redo_geometry(aid)
     except LookupError as e:
         raise HTTPException(409, str(e))
-    store.audit(aid, "C", "redo", {"to_seq": out["seq"]})
+    store.audit(aid, "C", "redo", {"to_seq": out["seq"]}, user=_current_user(request))
     source = _layout_source_of(out["geometry"])
     store.update(aid, layout_source=source)
     return pipeline.to_jsonable({"geometry": out.pop("geometry"),
@@ -1337,7 +1345,7 @@ def geometry_reset(aid: str, body: GeometryReset, request: Request):
         except KeyError:
             raise HTTPException(404, "not found")
         store.update(aid, layout_source="auto")
-        store.audit(aid, "C", "measuring points reset to auto-detected")
+        store.audit(aid, "C", "measuring points reset to auto-detected", user=_current_user(request))
         return pipeline.to_jsonable({"geometry": base, "history": hist,
                                      "layout_source": "auto"})
 
@@ -1360,7 +1368,7 @@ def geometry_reset(aid: str, body: GeometryReset, request: Request):
                                   detail={"phantom": prof["phantom_key"]})
     store.update(aid, layout_source="profile")
     store.audit(aid, "C", "measuring points reset to the stored phantom layout",
-                {"phantom": prof["phantom_key"], **report})
+                {"phantom": prof["phantom_key"], **report}, user=_current_user(request))
     return pipeline.to_jsonable({
         "geometry": geom, "history": hist, "layout_source": "profile",
         "profile": _profile_summary(prof), "profile_report": report})
@@ -1385,7 +1393,7 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
         raise HTTPException(400, "bad stage")
     nxt = order[min(order.index(body.stage) + 1, len(order) - 1)]
     store.update(aid, stage=nxt)
-    store.audit(aid, body.stage, "confirmed", {"note": body.note})
+    store.audit(aid, body.stage, "confirmed", {"note": body.note}, user=_current_user(request))
 
     out = {"stage": nxt, "profile_saved": False, "profile": None,
            "profile_error": None}
@@ -1415,7 +1423,7 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
         label, layout, pdef_version=pdef.version, algo_version=ALGO_VERSION,
         source_analysis_id=aid, updated_by=_current_user(request))
     store.audit(aid, "C", "phantom layout stored",
-                {"phantom": label, "rois": saved["n_rois"]})
+                {"phantom": label, "rois": saved["n_rois"]}, user=_current_user(request))
     audit("phantom_profile", user=_current_user(request),
           client=_client_key(request), analysis=aid, phantom=label,
           outcome="saved", rois=saved["n_rois"])
@@ -1432,21 +1440,27 @@ class ComputeBody(BaseModel):
 
 @app.post("/api/analyses/{aid}/compute")
 def compute(aid: str, body: ComputeBody, request: Request):
+    return _compute_analysis(aid, body, request)
+
+
+def _compute_analysis(aid, body, request, *, workflow="analyze"):
     rec = store.get(aid)
     if not rec or not rec.get("geometry"):
         raise HTTPException(400, "no confirmed geometry")
     _require_unsigned(rec, "recomputing the results")
-    store.update(aid, sid_mm=body.sid_mm)
-    # Keep the in-hand record in step with what was just written: building the
-    # context from the stale copy analysed with the PREVIOUS SID, so the
-    # field-alignment %-of-SID verdict disagreed with the SID shown everywhere.
-    rec["sid_mm"] = body.sid_mm
-    ctx = _ctx(aid, rec)
+    ctx = _ctx(aid, {**rec, "sid_mm": body.sid_mm})
     results = pipeline.compute_all(ctx, rec["geometry"])
+    results.setdefault("_meta", {}).update({"workflow": workflow, "manually_reviewed": False,
+                                            "pdef_version": pdef.version, "sid_mm": body.sid_mm})
     status = pipeline.overall_status(results)
-    store.update(aid, results=results, status=status, stage="F")
+    try:
+        store.save_computation(aid, rec, results, status, body.sid_mm, user=_current_user(request))
+    except KeyError:
+        raise HTTPException(404, "analysis not found")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
     store.audit(aid, "E", "computed", {"overall": status,
-                                       "sid_mm": body.sid_mm})
+                                       "sid_mm": body.sid_mm, "workflow": workflow}, user=_current_user(request))
     audit("compute", user=_current_user(request), client=_client_key(request),
           analysis=aid, outcome=status, sid_mm=body.sid_mm)
     log.info("computed analysis=%s overall=%s", aid, status)
@@ -1469,6 +1483,42 @@ class FinalizeBody(BaseModel):
     baseline: bool | None = None
 
 
+def _run_default_analysis(aid, request):
+    """Choose the normal Analyze defaults without pretending a person confirmed them."""
+    user = _current_user(request)
+    try:
+        _do_register(aid)
+        store.audit(aid, "A", "registration completed automatically", user=user)
+        propose(aid, ProposeBody(), request)
+        store.audit(aid, "C", "default measuring points used automatically", user=user)
+        store.audit(aid, "D", "default analysis options selected automatically",
+                    {"sid_mm": 1000.0}, user=user)
+        _compute_analysis(aid, ComputeBody(), request, workflow="auto_analyse")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from ..analysis.assessment import evaluate_results
+        rec = store.get(aid)
+        if rec is None:
+            raise HTTPException(404, "analysis not found")
+        detail = f"{type(exc).__name__}: {exc}"
+        geometry = rec.get("geometry") or {name: {"_error": detail} for name in pipeline.TESTS}
+        if not rec.get("geometry"):
+            store.set_geometry_baseline(aid, geometry, action="automatic detection error", user=user)
+        rec = store.get(aid)
+        results, _ = evaluate_results(geometry, {
+            name: {"status": "error", "error": detail} for name in pipeline.TESTS}, pdef)
+        results["_meta"] = {"algo_version": ALGO_VERSION, "workflow": "auto_analyse", "manually_reviewed": False}
+        try:
+            store.save_computation(aid, rec, results, "error", 1000.0, user=user)
+        except ValueError as conflict:
+            raise HTTPException(409, str(conflict))
+        store.audit(aid, "E", "automatic analysis incomplete", {"error": detail}, user=user)
+    saved = finalize(aid, FinalizeBody(), request)
+    if saved["report_error"]:
+        raise HTTPException(500, saved["report_error"])
+
+
 def _set_baseline(aid: str, rec: dict, value: bool, request: Request) -> dict:
     if value and rec.get("reduced_precision"):
         raise HTTPException(
@@ -1483,7 +1533,7 @@ def _set_baseline(aid: str, rec: dict, value: bool, request: Request) -> dict:
     except KeyError:
         raise HTTPException(404, "not found")   # deleted while we were editing
     store.audit(aid, "F", "baseline set" if value else "baseline cleared",
-                {"phantom": out["phantom"], "replaced": out["replaced"]})
+                {"phantom": out["phantom"], "replaced": out["replaced"]}, user=_current_user(request))
     audit("baseline", user=_current_user(request), client=_client_key(request),
           analysis=aid, outcome="set" if value else "cleared",
           phantom=out["phantom"], signature=out["signature"],
@@ -1527,11 +1577,18 @@ def finalize(aid: str, body: FinalizeBody, request: Request):
     changed = None
     if body.baseline is not None:
         changed = _set_baseline(aid, rec, body.baseline, request)
-    store.audit(aid, "F", "finalized", {"baseline": body.baseline})
+    revision = store.audit(aid, "F", "finalized", {"baseline": body.baseline}, user=_current_user(request))
+    report_error = None
+    try:
+        snapshot = store.revision(aid, revision)
+        store.save_revision_report(aid, revision, _render_report(snapshot["record"]))
+    except Exception as exc:
+        report_error = "The report could not be generated. Reopen the saved analysis to retry."
+        log.exception("report archive failed for analysis=%s revision=%s", aid, revision)
     audit("finalize", user=_current_user(request), client=_client_key(request),
           analysis=aid, baseline=body.baseline,
           site=rec.get("site"), phantom=rec.get("phantom"))
-    return {"ok": True, "baseline": changed}
+    return {"ok": True, "baseline": changed, "revision": revision, "report_error": report_error}
 
 
 class DeleteBody(BaseModel):
@@ -1679,7 +1736,7 @@ def set_validation(aid: str, body: ValidationBody, request: Request):
 
     before = {"validation_status": rec.get("validation_status", ""),
               "validated_by": rec.get("validated_by", "")}
-    store.audit(aid, "F", "validation set", applied)
+    store.audit(aid, "F", "validation set", applied, user=user)
     audit("validation", user=user, client=client, analysis=aid,
           outcome=applied["validation_status"] or "withdrawn",
           approver=applied["validated_by"], comment=applied["validation_comment"],
@@ -1761,21 +1818,65 @@ def comparison_report(ids: str = "", site: str = "", phantom: str = "",
     suffix = ""
     if site or phantom:
         suffix = " — " + " / ".join(x for x in (site, phantom) if x)
-    return build_comparison_report(
-        recs, title_suffix=suffix,
-        filters={"site": site, "phantom": phantom, "signature": signature,
-                 "validation": validation})
+    with _report_lock:
+        return build_comparison_report(
+            recs, title_suffix=suffix,
+            filters={"site": site, "phantom": phantom, "signature": signature,
+                     "validation": validation})
 
 
 @app.get("/api/analyses/{aid}/report.html", response_class=HTMLResponse)
-def report_html(aid: str):
+def report_html(aid: str, revision: int | None = None):
+    if revision is not None:
+        saved = store.revision(aid, revision)
+        if saved is None:
+            raise HTTPException(404, "revision not found")
+        if saved["report_html"] is not None:
+            return saved["report_html"]
+        html = _render_report(saved["record"])
+        store.save_revision_report(aid, revision, html)
+        return html
     rec = store.get(aid)
     if rec is None:
         raise HTTPException(404, "not found")
+    return _render_report(rec)
+
+
+@app.get("/api/analyses/{aid}/revisions")
+def analysis_revisions(aid: str):
+    if not store.exists(aid):
+        raise HTTPException(404, "not found")
+    return {"revisions": store.revisions(aid)}
+
+
+@app.get("/api/analyses/{aid}/revisions/{revision}")
+def analysis_revision(aid: str, revision: int):
+    saved = store.revision(aid, revision)
+    if saved is None:
+        raise HTTPException(404, "revision not found")
+    return saved
+
+
+def _render_report(rec):
+    # Automatic uploads also produce reports; pyplot is shared by worker threads.
+    with _report_lock:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        previous = set(plt.get_fignums())
+        try:
+            return _render_report_locked(rec)
+        finally:
+            for number in set(plt.get_fignums()) - previous:
+                plt.close(number)
+
+
+def _render_report_locked(rec):
+    aid = rec["id"]
     overlay = None
     if rec.get("geometry"):
         try:
-            ctx = _ctx(aid)
+            ctx = _ctx(aid, rec)
             overlay = pipeline.render_overlay(_scan(aid), ctx, rec["geometry"])
         except Exception:
             overlay = None

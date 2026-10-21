@@ -274,6 +274,16 @@ def _not_analysed(title: str, res: dict, key: str) -> str:
         f'{html.escape(str(why))}</p>')
 
 
+def _report_section(title, render, *args):
+    """An incomplete test must not prevent the other tests from being archived."""
+    try:
+        return render(*args)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return _section(title, "error",
+                        '<p class="warnbox">Some report measurements are missing or invalid. '
+                        'The complete saved data is available in the JSON record.</p>')
+
+
 def _linepairs_section(res, bmap):
     lp = res.get("linepairs") or {}
     if not lp.get("rows"):
@@ -528,11 +538,11 @@ def build_report(record: dict, overlay_png: bytes | None = None,
         for k, v in statuses)
 
     sections = (
-        _geometry_section(results, bmap)
-        + _linepairs_section(results, bmap)
-        + _lowcontrast_section(results, bmap, baseline_rows)
-        + _uniformity_section(results, bmap)
-        + _wedge_section(results, bmap)
+        _report_section("Geometry", _geometry_section, results, bmap)
+        + _report_section("Line patterns", _linepairs_section, results, bmap)
+        + _report_section("Low contrast", _lowcontrast_section, results, bmap, baseline_rows)
+        + _report_section("Uniformity", _uniformity_section, results, bmap)
+        + _report_section("Wedge", _wedge_section, results, bmap)
     )
 
     overlay_html = ""

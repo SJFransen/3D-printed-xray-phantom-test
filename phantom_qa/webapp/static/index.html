@@ -20,28 +20,13 @@
 
 <main id="view-auto-analyse">
   <form id="auto-upload-form" class="auto-card auto-upload-card">
-    <h2>New analysis</h2>
-    <p class="hint">DICOM file (preferred), zipped DICOM CD export, or a plain image.</p>
-    <h3>1 · Choose the scan file</h3>
-    <div class="drop-zone" id="auto-drop" role="button" tabindex="0">Drop file here or click to choose</div>
-    <input id="auto-file" name="file" type="file" required class="hidden">
-    <div id="auto-file-chosen" class="chosen hidden"></div>
-    <h3>2 · Identify this scan</h3>
-    <div class="auto-labels">
-      <label>Site <input name="site" list="auto-sites" placeholder="e.g. Goma Hospital"></label>
-      <label>Phantom <input name="phantom" list="auto-phantoms" placeholder="e.g. MSF-01"></label>
-      <label>Operator <input name="operator" placeholder="optional"></label>
-      <label>Notes <input name="notes" placeholder="optional"></label>
-    </div>
-    <datalist id="auto-sites"></datalist><datalist id="auto-phantoms"></datalist>
-    <h3>3 · Confirm</h3>
-    <button id="auto-submit" class="primary" type="submit" disabled>Upload &amp; analyze</button>
-    <button id="auto-clear-file" class="secondary" type="button">Clear file</button>
+    <div id="auto-upload-fields"></div>
     <p id="auto-error" class="hidden" role="alert"></p>
   </form>
   <div id="auto-results-page" class="hidden">
     <div class="auto-results-toolbar">
       <h2>Results</h2>
+      <span id="auto-identity" class="hint"></span>
       <button id="auto-new-scan" class="secondary" type="button">New scan</button>
       <button id="auto-open-analyze" class="secondary" type="button">Open in Analyze</button>
     </div>
@@ -278,7 +263,28 @@
   </section>
 </main>
 
+<template id="scan-upload-template">
+  <h2>New analysis</h2>
+  <p class="hint">DICOM file (preferred), zipped DICOM CD export, or a plain image.</p>
+  <h3>1 · Choose the scan file</h3>
+  <div class="drop-zone" id="drop" role="button" tabindex="0">Drop file here or click to choose</div>
+  <input id="file-input" name="file" type="file" class="hidden">
+  <div id="file-chosen" class="chosen hidden"></div>
+  <h3>2 · Identify this scan</h3>
+  <div class="form-grid auto-labels">
+    <label>Site <input id="up-site" name="site" list="dl-site" placeholder="e.g. Goma Hospital"></label>
+    <label>Phantom <input id="up-phantom" name="phantom" list="dl-phantom" placeholder="e.g. MSF-01"></label>
+    <label>Operator <input id="up-operator" name="operator" placeholder="optional"></label>
+    <label>Notes <input id="up-notes" name="notes" placeholder="optional"></label>
+  </div>
+  <datalist id="dl-site"></datalist><datalist id="dl-phantom"></datalist>
+  <p id="up-warn" class="hint"></p>
+  <h3>3 · Confirm</h3>
+  <button id="btn-upload" class="primary" type="button" disabled>Upload &amp; analyze</button>
+  <button id="btn-clear-file" class="secondary" type="button">Clear file</button>
+</template>
 <script src="viewer-tools.js"></script>
+<script src="upload-form.js"></script>
 <script src="app.js"></script>
 <script src="auto-analyse.js"></script>
 </body>

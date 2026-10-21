@@ -21,6 +21,7 @@
 #view-auto-analyse .auto-results-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-shrink: 0; }
 #view-auto-analyse .auto-results-toolbar h2 { margin: 0 auto 0 0; }
 #view-auto-analyse .auto-results-toolbar button { margin: 0; }
+#view-auto-analyse #auto-identity { min-width: 0; overflow-wrap: anywhere; }
 #view-auto-analyse .auto-results-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); gap: 20px; flex: 1; min-height: 0; }
 #view-auto-analyse .auto-phantom { display: flex; flex-direction: column; min-height: 0; }
 #view-auto-analyse .auto-todo { align-self: start; max-height: 100%; overflow: auto; }
@@ -44,6 +45,7 @@
 }
 #view-auto-analyse #auto-image { display: block; width: 100%; height: 100%; max-width: none; }
 #view-auto-analyse #auto-overlays { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#view-auto-analyse #auto-overlays [stroke] { stroke-width: var(--viewer-stroke, 1.4px); }
 #view-auto-analyse .auto-legend { display: flex; gap: 20px; flex-shrink: 0; }
 #view-auto-analyse .auto-pass { --auto-status: var(--auto-green); }
 #view-auto-analyse .auto-attention { --auto-status: var(--auto-orange); }

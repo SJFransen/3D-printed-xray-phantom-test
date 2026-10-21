@@ -18,7 +18,7 @@
     },
     onError: () => get("auto-image-error").classList.remove("hidden"),
   });
-  let analyses = [], activeIndex = 0, busy = false, labelsLoaded = false;
+  let analyses = [], activeIndex = 0, busy = false;
   const make = (tag, text, className) => {
     const node = document.createElement(tag);
     if (text) node.textContent = text;
@@ -43,26 +43,33 @@
     return data;
   }
 
-  async function loadLabels() {
-    if (labelsLoaded) return;
+  const upload = UploadForm.mount(get("auto-upload-fields"), {
+    prefix: "auto", request,
+    onUpload: () => { if (!busy) form.requestSubmit(); },
+  });
+  let refreshVersion = 0, dirty = false;
+  async function refreshSavedResult() {
+    const index = activeIndex, current = analyses[index], version = ++refreshVersion;
+    if (!current) return;
     try {
-      const labels = await request("api/labels");
-      for (const [key, id] of [["site", "auto-sites"], ["phantom", "auto-phantoms"]]) {
-        const list = get(id);
-        list.replaceChildren(...(labels[key] || []).map(item => {
-          const option = make("option"); option.value = item.value; return option;
-        }));
-      }
-      labelsLoaded = true;
-    } catch (_) { /* Identification remains optional when suggestions fail. */ }
+      const record = await request(`api/auto-analyse/${encodeURIComponent(current.id)}?duplicate=${current.duplicate}`);
+      if (version !== refreshVersion || analyses[index]?.id !== current.id) return;
+      analyses[index] = record; dirty = false;
+      if (index === activeIndex && !get("auto-results-page").classList.contains("hidden")) renderResult(index);
+    } catch (_) { /* Keep the saved preview available; opening Analyze can retry the record. */ }
   }
-
-  // A DOM event is the only connection to the existing navigation.
-  // Removing this script restores Analyze/History without changing app.js.
+  document.addEventListener("phantomqa:analysis-changed", event => {
+    if (!analyses.some(record => record.id === event.detail)) return;
+    dirty = true;
+    if (!page.classList.contains("hidden")) refreshSavedResult();
+  });
   document.addEventListener("phantomqa:tab", event => {
     page.classList.toggle("hidden", event.detail !== "auto-analyse");
     get("tab-auto-analyse").classList.toggle("active", event.detail === "auto-analyse");
-    if (event.detail === "auto-analyse") loadLabels();
+    if (event.detail === "auto-analyse") {
+      upload.loadLabels();
+      if (dirty) refreshSavedResult();
+    }
   });
   get("tab-auto-analyse").addEventListener("click", () => {
     get("view-analyze").classList.add("hidden");
@@ -70,33 +77,6 @@
     get("tab-analyze").classList.remove("active");
     get("tab-history").classList.remove("active");
     document.dispatchEvent(new CustomEvent("phantomqa:tab", {detail: "auto-analyse"}));
-  });
-  loadLabels();
-  for (const key of ["site", "phantom", "operator"]) {
-    form.elements[key].value = sessionStorage.getItem("lbl_" + key) || "";
-  }
-  const refreshFile = () => {
-    const file = get("auto-file").files[0];
-    get("auto-submit").disabled = !file || busy;
-    get("auto-file-chosen").classList.toggle("hidden", !file);
-    get("auto-file-chosen").textContent = file ? `${file.name} · ${(file.size / 1048576).toFixed(1)} MB` : "";
-  };
-  get("auto-file").addEventListener("change", refreshFile);
-  get("auto-clear-file").addEventListener("click", () => {
-    get("auto-file").value = ""; refreshFile();
-  });
-  const drop = get("auto-drop");
-  drop.addEventListener("click", () => { if (!busy) get("auto-file").click(); });
-  drop.addEventListener("keydown", event => {
-    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); drop.click(); }
-  });
-  drop.addEventListener("dragover", event => { event.preventDefault(); drop.classList.add("armed"); });
-  drop.addEventListener("dragleave", () => drop.classList.remove("armed"));
-  drop.addEventListener("drop", event => {
-    event.preventDefault(); drop.classList.remove("armed");
-    if (busy || !event.dataTransfer.files.length) return;
-    const files = new DataTransfer(); files.items.add(event.dataTransfer.files[0]);
-    get("auto-file").files = files.files; refreshFile();
   });
 
   function renderTasks(tasks) {
@@ -130,8 +110,7 @@
       const color = feature.state === "pass" ? "#65df8b" : "#ffb45c";
       const add = (tag, attrs) => {
         const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-        Object.entries({fill: "none", stroke: color, "stroke-width": 1.4,
-                        "vector-effect": "non-scaling-stroke", ...attrs})
+        Object.entries({fill: "none", stroke: color, "stroke-width": 1.4, ...attrs})
           .forEach(([key, value]) => node.setAttribute(key, value));
         const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
         title.textContent = `${feature.label}: ${feature.state === "pass" ? "PASS" : "Attention required"}`;
@@ -152,6 +131,7 @@
   function renderResult(index) {
     activeIndex = index;
     const record = analyses[index];
+    get("auto-identity").textContent = [record.site, record.phantom, record.operator].filter(Boolean).join(" · ");
     get("auto-result").classList.remove("hidden");
     get("auto-image-error").classList.add("hidden");
     // Hide the old image and overlays until the new image has loaded.
@@ -173,7 +153,7 @@
     viewer.clear();
     get("auto-results-page").classList.add("hidden");
     form.classList.remove("hidden");
-    get("auto-file").value = ""; refreshFile();
+    refreshVersion++; upload.reset();
     get("auto-error").classList.add("hidden");
   });
   get("auto-open-analyze").addEventListener("click", () => {
@@ -183,11 +163,10 @@
   get("auto-scan-select").addEventListener("change", event => renderResult(Number(event.target.value)));
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    if (busy || !form.reportValidity()) return;
+    if (busy || !upload.nodes.file.files.length || !form.reportValidity()) return;
     viewer.clear();
     busy = true;
-    const data = new FormData(form);
-    for (const key of ["site", "phantom", "operator"]) sessionStorage.setItem("lbl_" + key, data.get(key) || "");
+    const data = upload.data();
     form.classList.add("hidden");
     get("auto-results-page").classList.remove("hidden");
     get("auto-processing").classList.remove("hidden");
@@ -197,7 +176,7 @@
     get("auto-tasks").replaceChildren();
     get("auto-error").classList.add("hidden");
     form.setAttribute("aria-busy", "true");
-    form.querySelectorAll("input, button").forEach(input => { input.disabled = true; });
+    upload.setBusy(true);
     get("auto-progress").textContent = "Analyzing…";
     try {
       const response = await request("api/auto-analyse", {method: "POST", body: data});
@@ -211,7 +190,7 @@
       get("auto-scan-choice").classList.toggle("hidden", analyses.length < 2);
       renderResult(0);
       get("auto-progress").textContent = `Analysis complete. ${analyses.length} scan${analyses.length === 1 ? "" : "s"} processed.`;
-      labelsLoaded = false;
+      upload.loadLabels();
     } catch (error) {
       get("auto-results-page").classList.add("hidden");
       form.classList.remove("hidden");
@@ -222,8 +201,7 @@
       get("auto-processing").classList.add("hidden");
       get("auto-new-scan").disabled = false;
       get("auto-open-analyze").disabled = false;
-      form.querySelectorAll("input, button").forEach(input => { input.disabled = false; });
-      refreshFile();
+      upload.setBusy(false);
     }
   });
 })();

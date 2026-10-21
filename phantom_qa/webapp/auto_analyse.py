@@ -20,24 +20,10 @@ def create_router(backend):
             if aid in seen:
                 continue  # identical members of the same archive count once
             duplicate = not created
-            automatic = auto_analyse.run_automatic(scan, backend.pdef)
             if created:
-                backend.store.update(aid, reg=automatic["reg"], sid_mm=1000.0,
-                                     layout_source="auto")
-                backend.store.set_geometry_baseline(aid, automatic["geometry"],
-                                                    action="auto_propose", user=backend._current_user(request))
-                backend.store.audit(aid, "B", "automatic proposals generated")
-                backend.store.update(aid, results=automatic["results"], status=automatic["status"], stage="F")
-                backend.store.audit(aid, "E", "computed", {"overall": automatic["status"],
-                                                         "sid_mm": 1000.0, "workflow": "auto_analyse"})
-                backend.audit("compute", user=backend._current_user(request),
-                              client=backend._client_key(request), analysis=aid,
-                              outcome=automatic["status"], workflow="auto_analyse", sid_mm=1000.0)
-                backend.finalize(aid, backend.FinalizeBody(), request)
+                backend._run_default_analysis(aid, request)
             else:
-                # Reassess automatically in memory: an existing Analyze record
-                # may contain manual corrections or an administrator's ruling.
-                # Never replace its measurements, positions, labels or sign-off.
+                # Open the saved result; every displayed measurement has a durable source.
                 backend.audit("upload", user=backend._current_user(request),
                               client=backend._client_key(request), analysis=aid,
                               outcome="duplicate", workflow="auto_analyse", existing=[aid])
@@ -45,7 +31,7 @@ def create_router(backend):
             if record is None:
                 from fastapi import HTTPException
                 raise HTTPException(404, "Analysis was deleted while processing. Upload the scan again.")
-            payload = auto_analyse.result_payload(record, automatic, duplicate, saved=created)
+            payload = auto_analyse.result_payload(record, backend.pdef, duplicate, saved=created)
             payload["image"] = {"rows": scan.shape[0], "cols": scan.shape[1]}
             payload["display_range"] = display_range(scan.pixels)
             analyses.append(payload)
@@ -57,8 +43,26 @@ def create_router(backend):
                      site: str = Form(""), phantom: str = Form(""),
                      operator: str = Form(""), notes: str = Form("")):
         data, scans = await backend._read_upload(request, file)
-        labels = {"site": site, "phantom": phantom, "operator": operator, "notes": notes}
+        labels = {key: value.strip() for key, value in
+                  {"site": site, "phantom": phantom, "operator": operator, "notes": notes}.items()}
         # CPU work and database writes must not block the async server loop.
         return await run_in_threadpool(process, scans, data, labels, request)
+
+    @router.get("/{aid}")
+    def saved_result(aid: str, duplicate: bool = False):
+        from fastapi import HTTPException
+        record = backend.store.get(aid)
+        if record is None:
+            raise HTTPException(404, "analysis not found")
+        payload = auto_analyse.result_payload(record, backend.pdef, duplicate, saved=False)
+        payload["image"] = {"rows": (record.get("meta") or {}).get("Rows", 1),
+                            "cols": (record.get("meta") or {}).get("Columns", 1)}
+        try:
+            scan = backend._scan(aid)
+            payload["image"] = {"rows": scan.shape[0], "cols": scan.shape[1]}
+            payload["display_range"] = display_range(scan.pixels)
+        except Exception:
+            payload["display_range"] = None
+        return pipeline.to_jsonable(payload)
 
     return router

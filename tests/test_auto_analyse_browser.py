@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from test_auto_analyse import algorithms, mod, passing, png  # shared fixtures
+from test_analysis_revisions import alignment_case
 from test_authorization import USER_PW
 
 
@@ -161,11 +162,14 @@ def test_browser_viewer_fits_window_levels_zooms_and_pans_without_editing(browse
 
     check_fit()
     initial, overlays = matrix(), page.locator("#auto-overlays").inner_html()
+    stroke = lambda: page.locator("#auto-overlays [stroke]").first.evaluate("node => parseFloat(getComputedStyle(node).strokeWidth)") * matrix()[0]
+    assert stroke() == pytest.approx(1.4, rel=1e-5)
     automatic_url = image.get_attribute("src")
     writes = []
     page.on("request", lambda request: writes.append(request.url) if request.method != "GET" else None)
     page.locator("#auto-zoom-in").click()
     assert matrix()[0] == pytest.approx(initial[0] * 1.15, rel=1e-5)
+    assert stroke() == pytest.approx(1.4, rel=1e-5)
     page.locator("#auto-zoom-out").click()
     assert matrix() == pytest.approx(initial, rel=1e-5)
     box = viewer.bounding_box()
@@ -210,4 +214,63 @@ def test_browser_viewer_fits_window_levels_zooms_and_pans_without_editing(browse
     page.locator("#tab-auto-analyse").click()
     page.wait_for_function("() => document.getElementById('auto-viewer-layer').getBoundingClientRect().bottom <= document.getElementById('auto-viewer').getBoundingClientRect().bottom")
     check_fit()
+    assert not errors
+
+
+def test_browser_metadata_field_correction_and_saved_revisions(browser_page, mod, alignment_case, pdef, tmp_path):
+    page, errors = browser_page
+    page.locator('#auto-upload-form [name="site"]').fill(" Goma ")
+    page.locator('#auto-upload-form [name="phantom"]').fill("P1")
+    page.locator('#auto-upload-form [name="operator"]').fill("Operator")
+    page.locator('#auto-upload-form [name="notes"]').fill("Initial scan")
+    with page.expect_response("**/api/auto-analyse") as uploaded:
+        send_scan(page)
+    aid = uploaded.value.json()["analyses"][0]["id"]
+    first = next(row for row in mod.store.revisions(aid) if row["has_report"])
+    page.locator("#auto-open-analyze").click()
+    page.locator("#btn-back-d").wait_for(state="visible")
+    assert "Goma" in page.locator("#identity-bar").inner_text()
+    assert "P1" in page.locator("#identity-bar").inner_text()
+    page.locator("#btn-back-d").click()
+    page.locator("#btn-back-c").click()
+    page.locator("#btn-back-b").click()
+    page.locator("#btn-back-a").click()
+    page.locator("#btn-confirm-a").click()
+    page.locator("#btn-confirm-b").click()
+    held = []
+    page.route("**/field_edge", lambda route: held.append(route))
+    page.locator('.btn-field[data-side="top"]').click()
+    point = alignment_case.mm_to_px([0., pdef.side_mm / 2 + 40]).tolist()
+    position = page.evaluate("point => nat2scr(point)", point)
+    canvas = page.locator("#viewer").bounding_box()
+    page.mouse.click(canvas["x"] + position[0], canvas["y"] + position[1])
+    page.wait_for_function("() => analysisWrites.has(S.aid)")
+    page.locator("#btn-confirm-c").click()  # advance while the position request is still pending
+    assert "Stage C" in page.locator("#stage-content h2").inner_text()
+    assert held
+    held[0].continue_()
+    page.locator("#btn-confirm-d").wait_for(state="visible")
+    page.locator("#btn-confirm-d").click()
+    page.locator("#btn-confirm-e").wait_for(state="visible")
+    stored = mod.store.get(aid)
+    clicked_offset = stored["geometry"]["geometry"]["field_edges"]["top"]["offset_from_edge_mm"]
+    assert clicked_offset == pytest.approx(40, abs=.5)  # screen clicks have finite pixel precision
+    assert stored["results"]["geometry"]["field_alignment"]["top"]["offset_from_phantom_edge_mm"] == pytest.approx(clicked_offset)
+    page.locator("#btn-confirm-e").click()
+    with page.expect_response("**/finalize") as finalized:
+        page.locator("#btn-finalize").click()
+    assert not finalized.value.json()["report_error"]
+    current = mod.store.revision(aid, finalized.value.json()["revision"])
+    assert current["record"]["site"] == "Goma"
+    assert current["report_html"] and mod.store.revision(aid, first["revision"])["report_html"]
+    page.locator("#saved-revisions summary").click()
+    page.locator('#saved-revision-list a:text("Report")').first.wait_for(state="visible")
+    assert page.locator('#saved-revision-list a:text("Report")').count() == 2
+    page.locator("#tab-auto-analyse").click()
+    page.locator("#auto-feature-status li.auto-attention").wait_for(state="visible")
+    assert "Goma" in page.locator("#auto-identity").inner_text()
+    page.screenshot(path=str(tmp_path / "auto-analyze-corrected-desktop.png"), full_page=True)
+    page.set_viewport_size({"width": 650, "height": 900})
+    page.screenshot(path=str(tmp_path / "auto-analyze-corrected-mobile.png"), full_page=True)
+    assert len(mod.store.list_all()) == 1
     assert not errors

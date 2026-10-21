@@ -21,6 +21,7 @@ const S = {
   layoutSource: "", phantomProfile: null,
   lcAngleCommitted: 0, rotTargetId: null, previewPending: false,
 };
+const analysisWrites = new Map();
 
 /* Everything the viewer knows about ONE analysis. Cleared as a unit whenever
    an analysis is closed or deleted, so no fragment of the previous scan — a
@@ -31,6 +32,7 @@ function clearAnalysisState() {
   imageRequest++;
   S.aid = null; S.record = null; S.reg = null; S.geometry = null;
   S.results = null; S.baseline = null; S.imgEl = null;
+  S.useSavedResults = false;
   S.selectedRoi = null; S.mode = "normal"; S.manualCorners = [];
   S.fieldEdgeSide = null; S.dragFieldEdge = null; S.dragRoi = null; S.dimPreview = null;
   S.lcCorners = []; S.pendingFile = null;
@@ -97,9 +99,27 @@ async function api(path, opts = {}) {
   }
   return r.json();
 }
-const postJSON = (path, body, opts = {}) => api(path, {
-  method: "POST", headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(body), ...opts });
+function postJSON(path, body, opts = {}) {
+  const match = path.match(/api\/analyses\/([^/]+)\/(.+)/);
+  const send = () => api(path, {method: "POST", headers: {"Content-Type": "application/json"},
+                              body: JSON.stringify(body), ...opts});
+  if (!match) return send();
+  const [, aid, action] = match;
+  // A preview, confirmation or compute must wait for the preceding position save.
+  const previous = analysisWrites.get(aid);
+  const request = (previous ? previous.then(send) : send()).then(response => {
+    if (/^(roi|roi_rotate|lowcontrast_block|field_edge|register|propose|geometry\/)/.test(action) && S.aid === aid) {
+      S.results = null; S.dimPreview = null; S.baseline = null;
+      if (S.record) S.record.results = null;
+    }
+    if (action !== "compute_preview") document.dispatchEvent(new CustomEvent("phantomqa:analysis-changed", {detail: aid}));
+    return response;
+  });
+  analysisWrites.set(aid, request);
+  const cleanup = () => { if (analysisWrites.get(aid) === request) analysisWrites.delete(aid); };
+  request.then(cleanup, cleanup);
+  return request;
+}
 
 function status(msg, isErr = false) {
   const n = $("#app-status");
@@ -1336,100 +1356,17 @@ function renderStage() {
 
 /* ---- Stage U: upload (choose file, fill identity, then confirm) ---- */
 async function stageU(c) {
-  c.innerHTML = `<h2>New analysis</h2>
-    <p class="hint">DICOM file (preferred), zipped DICOM CD export, or a plain
-    image (reduced precision). Nothing is uploaded until you press
-    <b>Upload &amp; analyse</b>, so you can set the file and the labels in any
-    order.</p>
-
-    <h3>1 · Choose the scan file</h3>
-    <div class="drop-zone" id="drop">Drop file here or click to choose</div>
-    <input type="file" id="file-input" class="hidden">
-    <div id="file-chosen" class="chosen hidden"></div>
-
-    <h3>2 · Identify this scan</h3>
-    <p class="hint">Site and phantom are how analyses are grouped for trending.
-    Use the same spelling every time — previous values appear as suggestions.
-    You can still change these later from the identity bar above.</p>
-    <div class="form-grid">
-      <label>Site <input id="up-site" list="dl-site" placeholder="e.g. Goma Hospital"></label>
-      <label>Phantom <input id="up-phantom" list="dl-phantom" placeholder="e.g. MSF-01"></label>
-      <label>Operator <input id="up-operator" placeholder="optional"></label>
-      <label>Notes <input id="up-notes" placeholder="optional"></label>
-    </div>
-    <datalist id="dl-site"></datalist>
-    <datalist id="dl-phantom"></datalist>
-    <p id="up-warn" class="hint"></p>
-
-    <h3>3 · Confirm</h3>
-    <button class="primary" id="btn-upload" disabled>Upload &amp; analyse</button>
-    <button class="secondary" id="btn-clear-file">Clear file</button>`;
-
-  try {
-    const lab = await api("api/labels");
-    const opts = (items) => (items || [])
-      .map(s => `<option value="${s.value.replace(/"/g, "&quot;")}">`).join("");
-    $("#dl-site").innerHTML = opts(lab.site);
-    $("#dl-phantom").innerHTML = opts(lab.phantom);
-  } catch (e) { /* first run: no labels yet */ }
-
-  // remember the last used labels so a batch of scans is not retyped
-  ["site", "phantom", "operator"].forEach(k => {
-    const v = sessionStorage.getItem("lbl_" + k);
-    if (v) $("#up-" + k).value = v;
+  S.uploadForm = UploadForm.mount(c, {
+    request: api, onUpload: file => uploadFile(file),
+    onFile: file => { S.pendingFile = file; },
   });
-
-  const drop = $("#drop"), inp = $("#file-input");
-  const refresh = () => {
-    const f = S.pendingFile;
-    const box = $("#file-chosen");
-    box.classList.toggle("hidden", !f);
-    if (f) {
-      box.innerHTML = `<b>${f.name}</b> · ${(f.size / 1048576).toFixed(1)} MB`;
-    }
-    $("#btn-upload").disabled = !f;
-    const noLabel = !$("#up-site").value.trim() && !$("#up-phantom").value.trim();
-    $("#up-warn").innerHTML = noLabel
-      ? '<span style="color:var(--warn)">⚠ Without a site or phantom this '
-        + 'analysis will not appear in any grouped trend.</span>'
-      : "";
-  };
-
-  drop.addEventListener("click", () => inp.click());
-  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("armed"); });
-  drop.addEventListener("dragleave", () => drop.classList.remove("armed"));
-  drop.addEventListener("drop", (e) => {
-    e.preventDefault(); drop.classList.remove("armed");
-    if (e.dataTransfer.files.length) { S.pendingFile = e.dataTransfer.files[0]; refresh(); }
-  });
-  inp.addEventListener("change", () => {
-    if (inp.files.length) { S.pendingFile = inp.files[0]; refresh(); }
-  });
-  ["up-site", "up-phantom"].forEach(id =>
-    $("#" + id).addEventListener("input", refresh));
-  $("#btn-clear-file").addEventListener("click", () => {
-    S.pendingFile = null; inp.value = ""; refresh();
-  });
-  $("#btn-upload").addEventListener("click", () => {
-    if (S.pendingFile) uploadFile(S.pendingFile);
-  });
-  refresh();
 }
 
 async function uploadFile(file, opts = {}) {
-  const labels = {
-    site: ($("#up-site") || {}).value.trim() || "",
-    phantom: ($("#up-phantom") || {}).value.trim() || "",
-    operator: ($("#up-operator") || {}).value.trim() || "",
-    notes: ($("#up-notes") || {}).value.trim() || "",
-  };
-  ["site", "phantom", "operator"].forEach(
-    k => sessionStorage.setItem("lbl_" + k, labels[k]));
-  $("#btn-upload").disabled = true;
+  const upload = S.uploadForm;
+  upload.setBusy(true);
   status("Uploading and registering…");
-  const fd = new FormData();
-  fd.append("file", file);
-  Object.entries(labels).forEach(([k, v]) => fd.append(k, v));
+  const fd = S.uploadForm.data();
   if (opts.allowDuplicate) fd.append("allow_duplicate", "true");
   try {
     const r = await api("api/analyses", { method: "POST", body: fd });
@@ -1461,7 +1398,7 @@ async function uploadFile(file, opts = {}) {
     }
     status("Upload failed: " + e.message, true);
     if ($("#btn-upload")) $("#btn-upload").disabled = false;
-  }
+  } finally { upload.setBusy(false); }
 }
 
 async function openAnalysis(aid) {
@@ -1469,6 +1406,7 @@ async function openAnalysis(aid) {
   // this one, not even a selected ROI id or a half-finished corner click.
   clearAnalysisState();
   S.aid = aid;
+  if (analysisWrites.has(aid)) await analysisWrites.get(aid);
   const request = S.analysisRequest;
   const rec = await api(`api/analyses/${aid}`);
   if (request !== S.analysisRequest || aid !== S.aid) return;
@@ -1900,6 +1838,7 @@ async function submitFieldEdge(natPoint, side = S.fieldEdgeSide) {
 
 /* ---- Stage D ---- */
 async function stageD(c) {
+  const aid = S.aid;
   c.innerHTML = `<h2>Stage D — Dimension verification</h2>
     <p>SID <input type="number" id="sid-input" value="${S.sid}" step="10"> mm</p>
     <p class="hint">Computing dimensions…</p>`;
@@ -1908,6 +1847,7 @@ async function stageD(c) {
     const r = await postJSON(`api/analyses/${S.aid}/compute_preview`,
       { tests: ["geometry"], sid_mm: S.sid });
     gr = r.geometry;
+    if (S.aid !== aid || S.stage !== "D") return;
     S.dimPreview = gr;
   } catch (e) {
     c.innerHTML += `<p style="color:var(--fail)">${e.message}</p>`;
@@ -2039,16 +1979,23 @@ function reasonsBlock(reasons, status) {
 
 /* ---- Stage E ---- */
 async function stageE(c) {
+  const aid = S.aid;
   c.innerHTML = `<h2>Stage E — Analysis</h2><p class="hint">Computing…</p>`;
   let r;
   try {
-    r = await postJSON(`api/analyses/${S.aid}/compute`, { sid_mm: S.sid });
+    if (S.useSavedResults && S.results) {
+      r = {results: S.results, baseline: S.baseline, overall: S.record.status}; S.useSavedResults = false;
+    } else {
+      r = await postJSON(`api/analyses/${S.aid}/compute`, { sid_mm: S.sid });
+    }
+    if (S.aid !== aid || S.stage !== "E") return;
   } catch (e) {
     c.innerHTML = `<h2>Stage E — Analysis</h2>
       <p style="color:var(--fail)">${e.message}</p>`;
     return;
   }
   S.results = r.results;
+  if (S.record) { S.record.results = r.results; S.record.sid_mm = S.sid; }
   S.baseline = r.baseline;
   const res = r.results;
   // Each entry carries what the summary row needs plus the detail behind it,
@@ -2324,6 +2271,9 @@ function stageF(c) {
       <a href="api/analyses/${S.aid}/export.json" target="_blank">⬇ JSON (full record)</a>
     </p>
     <h3>Source file integrity</h3>
+    <details id="saved-revisions"><summary>Saved revisions</summary>
+      <div id="saved-revision-list" class="hint">Loading revisions…</div>
+    </details>
     <p class="hint">The SHA-256 below fingerprints the exact file these results
     came from. Verifying re-hashes the copy the server kept and reports any
     mismatch — corruption, a wrong restore, or a swapped file.</p>
@@ -2333,13 +2283,32 @@ function stageF(c) {
     <br>
     <button class="secondary" id="btn-new">New analysis</button>`;
   const bl = $("#btn-baseline");
+  $("#saved-revisions").addEventListener("toggle", async event => {
+    if (!event.target.open) return;
+    const aid = S.aid, list = $("#saved-revision-list");
+    try {
+      const data = await api(`api/analyses/${aid}/revisions`);
+      if (S.aid !== aid || !list.isConnected) return;
+      list.replaceChildren(...data.revisions.map(revision => {
+        const row = document.createElement("p");
+        row.append(document.createTextNode(`${revision.created_at} · ${revision.action}${revision.user ? " · " + revision.user : ""} `));
+        for (const [label, url] of [["JSON", `api/analyses/${aid}/revisions/${revision.revision}`],
+          ...(revision.has_report ? [["Report", `api/analyses/${aid}/report.html?revision=${revision.revision}`]] : [])]) {
+          const link = document.createElement("a"); link.href = url; link.textContent = label; link.target = "_blank";
+          row.append(link, document.createTextNode(" "));
+        }
+        return row;
+      }));
+      if (!data.revisions.length) list.textContent = "No saved revisions are available for this older analysis.";
+    } catch (_) { list.textContent = "Revisions could not be loaded. Close and reopen this section to retry."; }
+  });
   if (bl) bl.addEventListener("click", () => toggleBaseline(!r.is_baseline));
   $("#btn-finalize").addEventListener("click", async () => {
     try {
       // Finalising no longer touches the baseline: it is its own decision now,
       // and re-finalising must not silently clear a reference.
-      await postJSON(`api/analyses/${S.aid}/finalize`, {});
-      status("Finalized.");
+      const saved = await postJSON(`api/analyses/${S.aid}/finalize`, {});
+      status(saved.report_error || "Finalized.", !!saved.report_error);
     } catch (e) { status(e.message, true); }
   });
   $("#btn-validate-f").addEventListener("click", () =>
@@ -2460,7 +2429,9 @@ document.addEventListener("phantomqa:open-analysis", event => {
   if (typeof event.detail !== "string") return;
   const aid = event.detail;
   openAnalysis(aid).then(() => {
-    if (S.aid === aid && S.reg && S.geometry && !signedOff()) setStage("E");
+    if (S.aid === aid && S.reg && S.geometry && !signedOff()) {
+      S.useSavedResults = true; setStage("E");
+    }
   }).catch(error => status(error.message, true));
 });
 
