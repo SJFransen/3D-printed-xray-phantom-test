@@ -6,6 +6,7 @@ Run with:  python run_app.py   (or: uvicorn phantom_qa.webapp.main:app)
 from __future__ import annotations
 
 import html as _html
+import copy
 import hashlib
 import io
 import logging
@@ -15,6 +16,7 @@ import re
 import sys
 import threading
 import time
+from collections import OrderedDict
 
 html_escape = _html.escape
 _report_lock = threading.RLock()
@@ -25,7 +27,8 @@ from fastapi import (FastAPI, File, Form, HTTPException, Request, Response,
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, conlist, field_validator
+from pydantic import BaseModel, Field, conlist, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from .. import ALGO_VERSION
 from .. import ingest, layout_profile, pipeline
@@ -40,7 +43,7 @@ from ..report import build_report
 from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SharedThrottle,
                         csrf_ok, issue_session, new_csrf_token, read_session,
                         verify_password)
-from ..store import (VALIDATION_LABELS, VALIDATION_STATES, Store,
+from ..store import (VALIDATION_LABELS, VALIDATION_STATES, Store, AnalysisConflict,
                      acquisition_flag, csv_export, flatten_results,
                      wide_csv_export)
 from .display import display_range, window_image
@@ -82,18 +85,38 @@ admin_throttle = SharedThrottle(store.db_path, "admin",
 # served an earlier request keeps handing out a transform that a /register on
 # another worker has since replaced, and every pixel coordinate derived from it
 # would be wrong.
-_scans: dict[str, ingest.ScanData] = {}       # id -> ScanData cache
+_scans = OrderedDict()                      # bounded decoded-image LRU
+SCAN_CACHE_BYTES = 256 * 1024 * 1024
+_cache_lock = threading.RLock()
 _regs: dict[tuple, Registration] = {}         # (id, reg fingerprint) -> Registration
 _img_cache: dict[tuple, bytes] = {}
 
 
 def _forget(aid: str):
     """Drop every cached artefact of one analysis in THIS worker."""
-    _scans.pop(aid, None)
-    for key in [k for k in _regs if k[0] == aid]:
-        _regs.pop(key, None)
-    for key in [k for k in _img_cache if k[0] == aid]:
-        _img_cache.pop(key, None)
+    with _cache_lock:
+        _scans.pop(aid, None)
+        for key in [k for k in _regs if k[0] == aid]:
+            _regs.pop(key, None)
+        for key in [k for k in _img_cache if k[0] == aid]:
+            _img_cache.pop(key, None)
+
+
+def _cache_scan(aid, scan):
+    # The source is already durable; retaining a second byte copy wastes memory.
+    scan.source_bytes = None
+    with _cache_lock:
+        _scans.pop(aid, None)
+        if scan.pixels.nbytes > SCAN_CACHE_BYTES:
+            return
+        while _scans and sum(s.pixels.nbytes for s in _scans.values()) + scan.pixels.nbytes > SCAN_CACHE_BYTES:
+            _scans.popitem(last=False)
+        _scans[aid] = scan
+
+
+@app.exception_handler(AnalysisConflict)
+async def _analysis_conflict(request: Request, exc: AnalysisConflict):
+    return JSONResponse({"detail": str(exc)}, status_code=409)
 
 
 # ------------------------------------------------------------- security layer
@@ -327,13 +350,17 @@ def secrets_equal(a: str, b: str) -> bool:
 
 
 def _scan(aid: str) -> ingest.ScanData:
-    if aid in _scans:
+    with _cache_lock:
+        cached = _scans.get(aid)
+        if cached is not None:
+            _scans.move_to_end(aid)
+    if cached is not None:
         # The cache is per gunicorn worker. A delete served by ANOTHER worker
         # cannot reach this dict, so an existence check is what keeps a deleted
         # scan's pixels from being served forever. One indexed SELECT — cheap
         # next to decoding an image.
         if store.exists(aid):
-            return _scans[aid]
+            return cached
         _forget(aid)
     rec = store.get(aid)
     if rec is None:
@@ -356,7 +383,7 @@ def _scan(aid: str) -> ingest.ScanData:
             422, "The stored source file could not be decoded as an image. "
                  "It may be corrupted — run 'verify' to check its SHA-256.")
     match = next((s for s in scans if s.sha256 == rec["sha256"]), scans[0])
-    _scans[aid] = match
+    _cache_scan(aid, match)
     return match
 
 
@@ -368,8 +395,10 @@ def _reg(aid: str, rec: dict | None = None) -> Registration:
     # Fingerprint the stored transform, so a re-registration invalidates the
     # cache in every worker instead of only the one that served it.
     key = (aid, json_dumps_stable(r.get("transform")))
-    if key in _regs:
-        return _regs[key]
+    with _cache_lock:
+        cached = _regs.get(key)
+    if cached is not None:
+        return cached
     try:
         reg = Registration(
             transform=Transform.from_dict(r["transform"]),
@@ -388,9 +417,10 @@ def _reg(aid: str, rec: dict | None = None) -> Registration:
         raise HTTPException(
             409, "The stored registration for this analysis is corrupted. "
                  "Re-register it in Stage A (manual corners work too).")
-    if len(_regs) > 64:
-        _regs.clear()
-    _regs[key] = reg
+    with _cache_lock:
+        if len(_regs) >= 64:
+            _regs.clear()
+        _regs[key] = reg
     return reg
 
 
@@ -465,10 +495,13 @@ def _reg_payload(aid: str, reg: Registration) -> dict:
 
 
 def _do_register(aid: str, corners_hint=None):
+    expected = store.get(aid)
+    if expected is None:
+        raise HTTPException(404, "analysis not found")
     scan = _scan(aid)
     reg = (pipeline.run_stage_a(scan, pdef) if corners_hint is None
            else pipeline.run_stage_a(scan, pdef, corners_hint=corners_hint))
-    store.update(aid, reg=pipeline.to_jsonable({
+    store.save_registration(aid, expected, pipeline.to_jsonable({
         "transform": reg.transform.to_dict(),
         "corners_px": reg.corners_px,
         "coarse_angle_deg": reg.coarse_angle_deg,
@@ -485,17 +518,17 @@ def _do_register(aid: str, corners_hint=None):
 async def _read_upload(request: Request, file: UploadFile):
     """Shared upload validation/decoding; creates no History records."""
     user, client = _current_user(request), _client_key(request)
-    data = await file.read()
+    data = await file.read(cfg.max_upload_mb * 1024 * 1024 + 1)
     # The middleware caps the DECLARED size, but a chunked upload carries no
     # Content-Length and a hostile client can lie in the header. Measuring the
     # bytes actually received closes both holes; starlette has already spooled
-    # them to disk by now, so this costs nothing extra in memory.
+    # them to disk by now. Bound the read itself as well as checking its result.
     if len(data) > cfg.max_upload_mb * 1024 * 1024:
         audit("upload", user=user, client=client, outcome="rejected",
               filename=file.filename, error="body larger than declared cap")
         raise HTTPException(413, f"Upload exceeds {cfg.max_upload_mb} MB")
     try:
-        scans = ingest.load_any_bytes(data, file.filename or "upload")
+        scans = await run_in_threadpool(ingest.load_any_bytes, data, file.filename or "upload")
     except Exception as e:
         log.warning("upload rejected (%s) name=%r user=%s",
                     e, file.filename, user)
@@ -506,7 +539,7 @@ async def _read_upload(request: Request, file: UploadFile):
 
 
 def _save_upload(scan, data: bytes, labels: dict, request: Request,
-                 *, reuse_existing: bool = False):
+                 *, reuse_existing: bool = False, fill_labels_on_reuse: bool = True):
     """Shared source persistence and upload auditing. Returns (id, created)."""
     args = (scan, scan.source_bytes or data, ingest.protocol_signature(scan.meta),
             ALGO_VERSION, pdef.version)
@@ -514,13 +547,13 @@ def _save_upload(scan, data: bytes, labels: dict, request: Request,
         aid, created = store.new_analysis_once(*args, labels=labels)
     else:
         aid, created = store.new_analysis(*args, labels=labels), True
-    if not created:
+    if not created and fill_labels_on_reuse:
         changed = store.fill_missing_labels(aid, labels)
         if changed:
             store.audit(aid, "A", "missing identification supplied on re-upload", changed,
                         user=_current_user(request))
     if created:
-        _scans[aid] = scan
+        _cache_scan(aid, scan)
         store.audit(aid, "A", "uploaded",
                     {"source": scan.source_name, "kind": scan.kind,
                      **{k: v for k, v in labels.items() if v}}, user=_current_user(request))
@@ -539,10 +572,14 @@ async def upload(request: Request, file: UploadFile = File(...),
                  site: str = Form(""), phantom: str = Form(""),
                  operator: str = Form(""), notes: str = Form(""),
                  allow_duplicate: bool = Form(False)):
-    user, client = _current_user(request), _client_key(request)
     data, scans = await _read_upload(request, file)
     labels = {"site": site, "phantom": phantom,
               "operator": operator, "notes": notes}
+    return await run_in_threadpool(_upload_analyses, scans, data, labels, request, allow_duplicate)
+
+
+def _upload_analyses(scans, data, labels, request, allow_duplicate=False):
+    user, client = _current_user(request), _client_key(request)
 
     # The same file analysed twice produces two records that look identical in
     # History and double-count in any trend. The SHA-256 is already computed,
@@ -553,7 +590,7 @@ async def upload(request: Request, file: UploadFile = File(...),
             dupes.extend(store.find_by_sha256(scan.sha256))
         if dupes:
             audit("upload", user=user, client=client, outcome="duplicate",
-                  filename=file.filename, existing=[d["id"] for d in dupes])
+                  existing=[d["id"] for d in dupes])
             log.info("upload rejected as duplicate of %s",
                      [d["id"] for d in dupes])
             return JSONResponse(status_code=409, content=pipeline.to_jsonable({
@@ -569,12 +606,23 @@ async def upload(request: Request, file: UploadFile = File(...),
         store.get_phantom_profile(labels["phantom"]))
 
     created = []
+    seen = set()
     for scan in scans:
+        if scan.sha256 in seen:
+            continue
+        seen.add(scan.sha256)
         # Store the bytes the recorded hash actually describes. For a zip
         # (CD export) that is the extracted member, NOT the container:
         # storing the container made every integrity check fail, because the
         # recorded sha256 is the member's.
-        aid, _ = _save_upload(scan, data, labels, request)
+        aid, inserted = _save_upload(scan, data, labels, request,
+                                    reuse_existing=not allow_duplicate,
+                                    fill_labels_on_reuse=False)
+        if not inserted:
+            return JSONResponse(status_code=409, content=pipeline.to_jsonable({
+                "detail": "This file has already been analysed.",
+                "duplicate_of": store.find_by_sha256(scan.sha256),
+            }))
         try:
             reg = _do_register(aid)
             store.audit(aid, "A", "registered", user=_current_user(request))
@@ -761,6 +809,9 @@ def get_analysis(aid: str):
 @app.get("/api/analyses/{aid}/image.png")
 def image_png(aid: str, wc: float | None = None, ww: float | None = None,
               scale: int = 1600):
+    if not store.exists(aid):
+        _forget(aid)
+        raise HTTPException(404, "analysis not found")
     # Query values are viewer state, not trusted input: a zero or negative
     # scale crashes PIL's thumbnail, a huge one asks for a gigapixel resample,
     # and NaN passes FastAPI's float parsing and poisons the window arithmetic.
@@ -770,7 +821,9 @@ def image_png(aid: str, wc: float | None = None, ww: float | None = None,
     if ww is not None and not math.isfinite(ww):
         ww = None
     key = (aid, wc, ww, scale)
-    if key not in _img_cache:
+    with _cache_lock:
+        rendered = _img_cache.get(key)
+    if rendered is None:
         from PIL import Image
         img = _scan(aid).pixels
         pil = Image.fromarray(window_image(img, wc, ww))
@@ -780,10 +833,12 @@ def image_png(aid: str, wc: float | None = None, ww: float | None = None,
         pil.save(buf, format="png")
         # FIFO eviction: clearing the whole cache meant one operator paging
         # through History threw away every other operator's rendered view.
-        while len(_img_cache) > 24:
-            _img_cache.pop(next(iter(_img_cache)), None)
-        _img_cache[key] = buf.getvalue()
-    return Response(_img_cache[key], media_type="image/png")
+        rendered = buf.getvalue()
+        with _cache_lock:
+            while len(_img_cache) >= 24:
+                _img_cache.pop(next(iter(_img_cache)), None)
+            _img_cache[key] = rendered
+    return Response(rendered, media_type="image/png")
 
 
 class CornersBody(BaseModel):
@@ -791,7 +846,7 @@ class CornersBody(BaseModel):
 
 
 @app.post("/api/analyses/{aid}/register")
-def re_register(aid: str, body: CornersBody):
+def re_register(aid: str, body: CornersBody, request: Request):
     rec = store.get(aid)
     if rec is None:
         raise HTTPException(404, "not found")
@@ -799,12 +854,12 @@ def re_register(aid: str, body: CornersBody):
     hint = np.asarray(body.corners_px, float) if body.corners_px else None
     try:
         reg = _do_register(aid, corners_hint=hint)
+    except (AnalysisConflict, HTTPException):
+        raise
     except Exception as e:
         raise HTTPException(400, f"registration failed: {e}")
     # Geometry proposals are expressed in pixels derived from the transform, so
     # a new transform invalidates them — and every undo state built on top.
-    store.update(aid, geometry=None, results=None, stage="A", geometry_seq=0)
-    store.clear_geometry_history(aid)
     store.audit(aid, "A", "re-registered",
                 {"manual_corners": body.corners_px is not None}, user=_current_user(request))
     return _reg_payload(aid, reg)
@@ -847,7 +902,7 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
 
     # seq 0 is the untouched automatic proposal, always.
     try:
-        store.set_geometry_baseline(aid, geom, action="propose", user=user)
+        store.set_geometry_baseline(aid, geom, action="propose", user=user, expected=rec)
     except KeyError:
         raise HTTPException(404, "not found")   # deleted while proposing
     store.audit(aid, "B", "proposals generated", user=user)
@@ -859,9 +914,10 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
     if prof:
         check = layout_profile.layout_agrees(prof["layout"], geom)
         if check["ok"]:
+            proposed = {**rec, "geometry": copy.deepcopy(geom)}
             geom, report = layout_profile.apply_layout(ctx, geom, prof["layout"])
             store.replace_geometry(aid, geom, action="apply_profile", user=user,
-                                   detail={"phantom": prof["phantom_key"]})
+                                   detail={"phantom": prof["phantom_key"]}, expected=proposed)
             applied = True
             store.audit(aid, "B", "stored phantom layout applied",
                         {"phantom": prof["phantom_key"], **report}, user=user)
@@ -973,7 +1029,7 @@ def move_roi(aid: str, body: RoiMove, request: Request):
 
     try:
         (old_center, new_center, node, changed), hist = store.mutate_geometry(
-            aid, edit, action="roi", user=_current_user(request),
+            aid, edit, action="roi", user=_current_user(request), expected=rec,
             detail={"roi": body.roi_id})
     except KeyError:
         raise HTTPException(404, "analysis not found")
@@ -1054,7 +1110,7 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
 
     try:
         (old_angle, node, changed), hist = store.mutate_geometry(
-            aid, edit, action="roi_rotate", user=_current_user(request),
+            aid, edit, action="roi_rotate", user=_current_user(request), expected=rec,
             detail={"roi": body.roi_id, "to_deg": body.angle_deg})
     except KeyError:
         raise HTTPException(404, "analysis not found")
@@ -1144,7 +1200,7 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
 
     try:
         (centre, angle, lcg), hist = store.mutate_geometry(
-            aid, edit, action="lowcontrast_block",
+            aid, edit, action="lowcontrast_block", expected=rec,
             user=_current_user(request), detail={"angle_deg": body.angle_deg})
     except KeyError:
         raise HTTPException(404, "analysis not found")
@@ -1172,7 +1228,7 @@ def roi_stats(aid: str, roi_id: str):
 
 class PreviewBody(BaseModel):
     tests: list[str] = ["geometry"]
-    sid_mm: float = 1000.0
+    sid_mm: float = Field(default=1000.0, gt=0, allow_inf_nan=False)
 
 
 @app.post("/api/analyses/{aid}/compute_preview")
@@ -1255,7 +1311,7 @@ def set_field_edge(aid: str, body: FieldEdgeSet, request: Request):
 
     try:
         _, hist = store.mutate_geometry(
-            aid, edit, action="field_edge", user=_current_user(request),
+            aid, edit, action="field_edge", user=_current_user(request), expected=rec,
             detail={"side": body.side, "offset_mm": offset})
     except KeyError:
         raise HTTPException(404, "analysis not found")
@@ -1291,7 +1347,7 @@ def geometry_undo(aid: str, request: Request):
         raise HTTPException(404, "not found")
     _require_unsigned(rec, "undoing a measuring-point change")
     try:
-        out = store.undo_geometry(aid)
+        out = store.undo_geometry(aid, expected=rec)
     except LookupError as e:
         raise HTTPException(409, str(e))
     store.audit(aid, "C", "undo", {"to_seq": out["seq"]}, user=_current_user(request))
@@ -1308,7 +1364,7 @@ def geometry_redo(aid: str, request: Request):
         raise HTTPException(404, "not found")
     _require_unsigned(rec, "redoing a measuring-point change")
     try:
-        out = store.redo_geometry(aid)
+        out = store.redo_geometry(aid, expected=rec)
     except LookupError as e:
         raise HTTPException(409, str(e))
     store.audit(aid, "C", "redo", {"to_seq": out["seq"]}, user=_current_user(request))
@@ -1346,7 +1402,7 @@ def geometry_reset(aid: str, body: GeometryReset, request: Request):
                      "the registration in Stage A to generate one")
         try:
             hist = store.replace_geometry(aid, base, action="reset_auto",
-                                          user=user)
+                                          user=user, expected=rec)
         except KeyError:
             raise HTTPException(404, "not found")
         store.update(aid, layout_source="auto")
@@ -1370,7 +1426,7 @@ def geometry_reset(aid: str, body: GeometryReset, request: Request):
     ctx = _ctx(aid, rec)
     geom, report = layout_profile.apply_layout(ctx, base, prof["layout"])
     hist = store.replace_geometry(aid, geom, action="reset_profile", user=user,
-                                  detail={"phantom": prof["phantom_key"]})
+                                  detail={"phantom": prof["phantom_key"]}, expected=rec)
     store.update(aid, layout_source="profile")
     store.audit(aid, "C", "measuring points reset to the stored phantom layout",
                 {"phantom": prof["phantom_key"], **report}, user=_current_user(request))
@@ -1440,7 +1496,7 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
 
 
 class ComputeBody(BaseModel):
-    sid_mm: float = 1000.0
+    sid_mm: float = Field(default=1000.0, gt=0, allow_inf_nan=False)
 
 
 @app.post("/api/analyses/{aid}/compute")
@@ -1499,7 +1555,7 @@ def _run_default_analysis(aid, request):
         store.audit(aid, "D", "default analysis options selected automatically",
                     {"sid_mm": 1000.0}, user=user)
         _compute_analysis(aid, ComputeBody(), request, workflow="auto_analyse")
-    except HTTPException:
+    except (HTTPException, AnalysisConflict):
         raise
     except Exception as exc:
         from ..analysis.assessment import evaluate_results

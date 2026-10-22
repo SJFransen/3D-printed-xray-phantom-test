@@ -21,10 +21,12 @@ included — re-running changes numbers somebody put their name to.
 from __future__ import annotations
 
 import os
+import math
 
 from . import ALGO_VERSION, ingest, pipeline
 from .logging_setup import audit, get_logger
 from .phantom_def import PhantomDef
+from .store import AnalysisConflict
 
 log = get_logger("reanalyze")
 
@@ -64,6 +66,10 @@ def reanalyze_one(store, pdef: PhantomDef, aid: str, mode: str = "results",
     rec = store.get(aid)
     if rec is None:
         return {"id": aid, "status": "not_found"}
+    sid_mm = rec.get("sid_mm") if rec.get("sid_mm") is not None else 1000.0
+    if not math.isfinite(sid_mm) or sid_mm <= 0:
+        return {"id": aid, "status": "invalid_parameters",
+                "message": "Stored SID must be a finite positive distance. Correct it in Analyze first."}
     if rec.get("validation_status") and not include_validated and not dry_run:
         # The module's promise — signed-off analyses are skipped unless
         # explicitly included — has to hold on THIS path too. Naming an id
@@ -120,13 +126,13 @@ def reanalyze_one(store, pdef: PhantomDef, aid: str, mode: str = "results",
         reg = pipeline.run_stage_a(scan, pdef)
         ctx = pipeline.build_ctx(scan, pdef, reg,
                                  {"scan_meta": scan.meta,
-                                  "sid_mm": rec.get("sid_mm") or 1000.0})
+                                  "sid_mm": sid_mm})
         geometry = pipeline.propose_all(ctx)
     else:
         reg = pipeline.registration_from_dict(rec["reg"])
         ctx = pipeline.build_ctx(scan, pdef, reg,
                                  {"scan_meta": scan.meta,
-                                  "sid_mm": rec.get("sid_mm") or 1000.0})
+                                  "sid_mm": sid_mm})
         geometry = rec["geometry"]
 
     results = pipeline.compute_all(ctx, geometry)
@@ -144,28 +150,14 @@ def reanalyze_one(store, pdef: PhantomDef, aid: str, mode: str = "results",
     if dry_run:
         return summary
 
-    fields = {"results": results, "status": new_status,
-              "algo_version": ALGO_VERSION, "pdef_version": pdef.version}
-    if mode == "full":
-        fields["geometry"] = geometry
-        fields["reg"] = pipeline.registration_to_dict(reg)
-        fields["geometry_seq"] = 0
-        # full mode re-detects from scratch, so whatever stored layout the
-        # geometry used to carry is gone with it
-        fields["layout_source"] = "auto"
-    store.update(aid, **fields)
-    if mode == "full":
-        # Re-detection replaces the transform, so every stored measuring-point
-        # state now holds pixel coordinates from a registration that is gone.
-        # An undo stack whose snapshots were built against a discarded
-        # transform is worse than none at all.
-        #
-        # The results are NOT invalidated here, unlike every other geometry
-        # write: they were computed from precisely this geometry a few lines
-        # above, so the two already agree. Letting the default fire blanked
-        # them, and the CLI still printed "pass -> pass" over the top of it.
-        store.set_geometry_baseline(aid, geometry, action="reanalyze",
-                                    user=user or "", invalidate_results=False)
+    try:
+        store.save_reanalysis(
+            aid, rec, results, new_status, algo_version=ALGO_VERSION,
+            pdef_version=pdef.version, include_validated=include_validated, user=user,
+            registration=pipeline.registration_to_dict(reg) if mode == "full" else None,
+            geometry=geometry if mode == "full" else None)
+    except (AnalysisConflict, KeyError) as exc:
+        return {"id": aid, "status": "conflict", "message": str(exc)}
     store.audit(aid, "E", "re-analysed",
                 {"mode": mode, "algo": f"{summary['old_algo']} -> {ALGO_VERSION}",
                  "pdef": f"{summary['old_pdef']} -> {pdef.version}",

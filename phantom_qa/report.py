@@ -193,6 +193,19 @@ def _section(title, status, body, note=""):
 </section>"""
 
 
+def _geometry_status(geometry, key):
+    return "error" if geometry.get("status") == "error" else geometry.get(key, "n/a")
+
+
+def _analysis_notes(result):
+    issues = result.get("analysis_issues") or []
+    if not issues:
+        return ""
+    return '<div class="warnbox"><b>Analysis incomplete</b><ul>' + ''.join(
+        '<li>' + html.escape(f"{issue.get('path', '')}: {issue.get('detail', '')}") + '</li>'
+        for issue in issues) + '</ul></div>'
+
+
 def _geometry_section(res, bmap):
     g = res.get("geometry") or {}
     if not g:
@@ -254,9 +267,10 @@ def _geometry_section(res, bmap):
 <tr><td>implied magnification vs detector plane</td>
     <td class='num'>{_num(sc.get('implied_magnification_vs_detector_plane'), 4)}</td><td>×</td></tr>
 </table>
-<h3>X-ray field vs central long lines {_chip(g.get('field_status'))}</h3>
+<h3>X-ray field vs central long lines {_chip(_geometry_status(g, 'field_status'))}</h3>
 <table><tr><th>side</th><th>deviation [mm]</th><th>% of SID</th><th></th></tr>{fields}</table>"""
-    return _section("Geometry & dimensions", g.get("dimension_status"), body)
+    return _section("Geometry & dimensions", _geometry_status(g, "dimension_status"),
+                    _analysis_notes(g) + body)
 
 
 def _not_analysed(title: str, res: dict, key: str) -> str:
@@ -526,8 +540,8 @@ def build_report(record: dict, overlay_png: bytes | None = None,
             bmap[(row["test"], row["object"], row["metric"])] = row["value"]
 
     statuses = [
-        ("Geometry / dimensions", (results.get("geometry") or {}).get("dimension_status", "n/a")),
-        ("Field alignment", (results.get("geometry") or {}).get("field_status", "n/a")),
+        ("Geometry / dimensions", _geometry_status(results.get("geometry") or {}, "dimension_status")),
+        ("Field alignment", _geometry_status(results.get("geometry") or {}, "field_status")),
         ("Line patterns", (results.get("linepairs") or {}).get("status", "n/a")),
         ("Low contrast", (results.get("lowcontrast") or {}).get("status", "n/a")),
         ("Uniformity", (results.get("uniformity") or {}).get("status", "n/a")),

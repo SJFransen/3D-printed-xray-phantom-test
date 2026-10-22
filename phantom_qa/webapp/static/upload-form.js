@@ -1,7 +1,7 @@
 /* Shared upload UI: both workflows submit the same file and identification fields. */
 (() => {
   "use strict";
-  function mount(host, {prefix = "", request, onUpload, onFile = () => {}}) {
+  function mount(host, {prefix = "", request, onUpload, onFile = () => {}, compact = false}) {
     host.replaceChildren(document.getElementById("scan-upload-template").content.cloneNode(true));
     const ids = {drop: "drop", file: "file-input", chosen: "file-chosen", upload: "btn-upload",
       clear: "btn-clear-file", warning: "up-warn", site: "up-site", phantom: "up-phantom",
@@ -18,6 +18,13 @@
     for (const key of ["site", "phantom", "operator"]) {
       nodes[key].value = sessionStorage.getItem("lbl_" + key) || "";
     }
+    if (compact) {
+      for (const node of host.children) {
+        if (node !== nodes.drop && node !== nodes.file) node.classList.add("hidden");
+      }
+      nodes.drop.textContent = "Drop DICOM file here";
+      nodes.drop.setAttribute("aria-label", "Drop DICOM file here or choose a file");
+    }
     let file = null, busy = false;
     const labels = () => Object.fromEntries(["site", "phantom", "operator", "notes"]
       .map(key => [key, nodes[key].value.trim()]));
@@ -28,7 +35,10 @@
       nodes.warning.textContent = !labels().site && !labels().phantom
         ? "Without a site or phantom, this scan will not appear in grouped trends." : "";
     }
-    function choose(next) { file = next; onFile(file); refresh(); }
+    function choose(next) {
+      file = next; onFile(file); refresh();
+      if (compact && file && !busy) onUpload(file);
+    }
     nodes.file.addEventListener("change", () => choose(nodes.file.files[0] || null));
     nodes.drop.addEventListener("click", () => { if (!busy) nodes.file.click(); });
     nodes.drop.addEventListener("keydown", event => {
@@ -59,6 +69,9 @@
     return {nodes, labels, refresh, loadLabels,
       data() {
         const data = new FormData(); data.append("file", file);
+        if (compact) {
+          for (const key of ["site", "phantom", "operator"]) nodes[key].value = sessionStorage.getItem("lbl_" + key) || "";
+        }
         for (const [key, value] of Object.entries(labels())) data.append(key, value);
         for (const key of ["site", "phantom", "operator"]) sessionStorage.setItem("lbl_" + key, labels()[key]);
         return data;
@@ -70,6 +83,8 @@
       },
       setBusy(value) {
         busy = value;
+        nodes.drop.setAttribute("aria-disabled", String(busy));
+        nodes.drop.tabIndex = busy ? -1 : 0;
         host.querySelectorAll("input,button").forEach(node => { node.disabled = busy; });
         refresh();
       },

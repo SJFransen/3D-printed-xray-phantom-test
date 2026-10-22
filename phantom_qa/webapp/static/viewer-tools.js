@@ -11,6 +11,17 @@
     ty: point[1] - (point[1] - view.ty) * factor,
   });
   const pan = (view, dx, dy) => ({...view, tx: view.tx + dx, ty: view.ty + dy});
+  const linepairRois = geometry => {
+    const groups = geometry?.linepairs?.groups;
+    const point = value => Array.isArray(value) && value.length === 2 && value.every(Number.isFinite);
+    if (!Array.isArray(groups)) return [];
+    return groups.filter(group => group && typeof group === "object").flatMap(group => [
+      {roi: group.roi, test: "linepairs", label: group.id, drag: true},
+      {roi: group.profile_seg, test: "linepairs"},
+    ]).filter(({roi}) => roi && (
+      (roi.type === "rect" && Array.isArray(roi.corners_px) && roi.corners_px.length === 4 && roi.corners_px.every(point))
+      || (roi.type === "segment" && point(roi.p0_px) && point(roi.p1_px))));
+  };
   const windowAbsolute = (range, width, center) => {
     if (!range) return null;
     const span = Math.max(range.hi - range.lo, 1e-6);
@@ -22,8 +33,9 @@
   };
 
   class ImageViewer {
-    constructor({viewport, layer, image, controls, onLoad, onError}) {
+    constructor({viewport, layer, image, controls, onLoad, onError, strokeWidth = 1.4}) {
       Object.assign(this, {viewport, layer, image, controls, onLoad, onError});
+      this.strokeWidth = strokeWidth;
       this.view = {k: 1, tx: 0, ty: 0};
       this.version = 0; this.timer = null; this.loaded = false;
       this.fitted = true; this.size = [0, 0]; this.drag = null;
@@ -128,7 +140,7 @@
     apply() {
       const {k, tx, ty} = this.view;
       this.layer.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
-      this.layer.style.setProperty("--viewer-stroke", `${1.4 / k}px`);
+      this.layer.style.setProperty("--viewer-stroke", `${this.strokeWidth / k}px`);
     }
 
     fit() {
@@ -152,5 +164,5 @@
     }
   }
 
-  globalThis.ViewerTools = {fit, zoomAt, pan, windowAbsolute, windowLabel, ImageViewer};
+  globalThis.ViewerTools = {fit, zoomAt, pan, linepairRois, windowAbsolute, windowLabel, ImageViewer};
 })();

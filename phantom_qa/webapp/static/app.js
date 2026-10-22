@@ -160,7 +160,7 @@ window.addEventListener("resize", resizeCanvas);
 
 function zoomFit() {
   if (!S.imgEl) return;
-  S.view = ViewerTools.fit(canvas.width, canvas.height, S.imgEl.width, S.imgEl.height);
+  S.view = ViewerTools.fit(canvas.width, canvas.height, S.nativeCols, S.nativeRows);
   draw();
 }
 
@@ -173,7 +173,8 @@ function loadImage(params = "") {
     if (request !== imageRequest || aid !== S.aid) return;
     const first = !S.imgEl;
     S.imgEl = img;
-    S.imgScale = img.width / S.nativeCols;
+    // Both viewers use original detector pixels, independent of preview rounding.
+    S.imgScale = 1;
     if (first) zoomFit(); else draw();
   };
   img.onerror = () => {
@@ -284,10 +285,7 @@ function activeRois() {
     out.push({ roi: g.wedge.axis, test: "wedge" });
   }
   if (g.linepairs && !g.linepairs._error && S.visible.linepairs)
-    g.linepairs.groups.forEach(gr => {
-      out.push({ roi: gr.roi, test: "linepairs", label: gr.id, drag: true });
-      out.push({ roi: gr.profile_seg, test: "linepairs" });
-    });
+    out.push(...ViewerTools.linepairRois(g));
   if (g.lowcontrast && !g.lowcontrast._error && S.visible.lowcontrast) {
     out.push({ roi: g.lowcontrast.block, test: "lowcontrast",
                label: "block", drag: true, block: true });
@@ -315,7 +313,7 @@ function draw() {
   ctx2d.save();
   ctx2d.translate(S.view.tx, S.view.ty);
   ctx2d.scale(S.view.k, S.view.k);
-  ctx2d.drawImage(S.imgEl, 0, 0);
+  ctx2d.drawImage(S.imgEl, 0, 0, S.nativeCols, S.nativeRows);
   ctx2d.restore();
 
   /* registration corners */
@@ -1423,12 +1421,21 @@ async function openAnalysis(aid) {
   updateWLReadout();
   loadImage();
   showTab("analyze");
-  setStage(rec.geometry ? (rec.results ? "F" : rec.stage || "B") : "A");
+  setStage(!S.reg ? "A" : (rec.geometry ? (rec.results ? "F" : rec.stage || "B") : "A"));
 }
 
 /* ---- Stage A ---- */
 function stageA(c) {
-  if (!S.reg) { c.innerHTML = "<p>Registration unavailable.</p>"; return; }
+  if (!S.reg) {
+    c.innerHTML = '<h2>Stage A — Registration check</h2>'
+      + '<p>Automatic registration could not locate the phantom. Mark its four corners to continue.</p>'
+      + '<button class="primary" id="btn-manual-corners">Mark phantom corners</button>';
+    $("#btn-manual-corners").addEventListener("click", () => {
+      S.mode = "corners"; S.manualCorners = [];
+      status("Click the 4 phantom corners in order around the square."); draw();
+    });
+    return;
+  }
   const s = S.reg.summary;
   const lmRows = Object.entries(S.reg.landmarks || {}).map(([side, l]) =>
     `<tr><td>${side}</td><td class="num">${l.err_mm !== null && l.err_mm !== undefined

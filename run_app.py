@@ -25,4 +25,5 @@ if __name__ == "__main__":
               "network. Set PHANTOMQA_ENV=production in .env before deploying.")
     uvicorn.run("phantom_qa.webapp.main:app", host=host, port=port,
                 log_level="info", proxy_headers=cfg.behind_proxy,
-                forwarded_allow_ips="*" if cfg.behind_proxy else None)
+                forwarded_allow_ips=os.environ.get("PHANTOMQA_FORWARDED_ALLOW_IPS", "127.0.0.1")
+                if cfg.behind_proxy else None)

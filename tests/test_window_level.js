@@ -48,7 +48,8 @@ async function run() {
   const first = images.at(-1), url = new URL(first.src, 'http://local/');
   assert.equal(+url.searchParams.get('wc'), 11500);
   assert.equal(+url.searchParams.get('ww'), 3500);
-  first.onload(); assert.equal(S.imgEl, first); assert.equal(S.imgScale, 0.5);
+  first.onload(); assert.equal(S.imgEl, first);
+  assert.equal(S.imgScale, 1, 'ROI coordinates stay in detector pixels despite a smaller preview');
 
   controls['#wl-width'].value = 20;
   controls['#wl-width'].handlers.input(); flush();

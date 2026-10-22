@@ -6,6 +6,7 @@
   const get = id => document.getElementById(id);
   const form = get("auto-upload-form");
   const viewer = new ViewerTools.ImageViewer({
+    strokeWidth: 2.6,
     viewport: get("auto-viewer"), layer: get("auto-viewer-layer"), image: get("auto-image"),
     controls: {
       width: get("auto-wl-width"), center: get("auto-wl-center"), readout: get("auto-wl-readout"),
@@ -44,7 +45,7 @@
   }
 
   const upload = UploadForm.mount(get("auto-upload-fields"), {
-    prefix: "auto", request,
+    prefix: "auto", request, compact: true,
     onUpload: () => { if (!busy) form.requestSubmit(); },
   });
   let refreshVersion = 0, dirty = false;
@@ -116,13 +117,16 @@
         title.textContent = `${feature.label}: ${feature.state === "pass" ? "PASS" : "Attention required"}`;
         node.append(title); svg.append(node);
       };
-      for (const roi of feature.overlays) {
-        if (roi.type === "rect") add("polygon", {points: roi.corners_px.map(p => p.join(",")).join(" ")});
-        else if (roi.type === "segment") add("line", {x1: roi.p0_px[0], y1: roi.p0_px[1], x2: roi.p1_px[0], y2: roi.p1_px[1]});
-        else if (roi.type === "point") add("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r: radius});
-        else if (roi.type === "circle") add("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r: roi.radius_px});
+      const rois = feature.id === "linepairs" && record.geometry
+        ? ViewerTools.linepairRois(record.geometry).map(entry => entry.roi) : feature.overlays;
+      for (const roi of rois) {
+        const draw = (tag, attrs) => add(tag, {"data-roi-id": roi.id || feature.id, ...attrs});
+        if (roi.type === "rect") draw("polygon", {points: roi.corners_px.map(p => p.join(",")).join(" ")});
+        else if (roi.type === "segment") draw("line", {x1: roi.p0_px[0], y1: roi.p0_px[1], x2: roi.p1_px[0], y2: roi.p1_px[1]});
+        else if (roi.type === "point") draw("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r: radius});
+        else if (roi.type === "circle") draw("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r: roi.radius_px});
         else if (roi.type === "annulus") {
-          [roi.inner_radius_px, roi.outer_radius_px].forEach(r => add("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r}));
+          [roi.inner_radius_px, roi.outer_radius_px].forEach(r => draw("circle", {cx: roi.center_px[0], cy: roi.center_px[1], r}));
         }
       }
     }
@@ -142,6 +146,7 @@
     for (const feature of record.features) {
       const row = make("li", feature.label,
                        feature.state === "pass" ? "auto-pass" : "auto-attention");
+      row.append(make("span", feature.state === "pass" ? "PASS" : "Attention", "auto-verdict"));
       row.setAttribute("aria-label", `${feature.label}: ${feature.state === "pass" ? "PASS" : "Attention"}`);
       statuses.append(row);
     }

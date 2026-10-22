@@ -5,6 +5,7 @@ Uses local Chrome or Playwright Chromium; no browser download at test time.
 from __future__ import annotations
 
 import json
+import io
 import os
 import socket
 import threading
@@ -84,7 +85,6 @@ def browser_page(mod, algorithms, legacy_upload_cache):
 
 def send_scan(page, seed=0):
     page.locator("#auto-file").set_input_files({"name": "scan.png", "mimeType": "image/png", "buffer": png(seed)})
-    page.locator("#auto-submit").click()
     page.locator("#auto-result").wait_for(state="visible")
     page.locator("#auto-viewer").wait_for(state="visible")
 
@@ -101,11 +101,12 @@ def test_browser_upload_forms_survive_cached_controllers_from_previous_release(b
     legacy_upload_cache["priming"] = False
     page.goto(origin + "/")
     page.locator("#auto-drop").wait_for(state="visible", timeout=3000)
-    assert page.locator("#auto-site").is_visible()
+    assert page.locator("#auto-site").is_hidden()
+    assert page.locator("#auto-drop").inner_text() == "Drop DICOM file here"
     with page.expect_file_chooser() as chosen:
         page.locator("#auto-drop").click()
     chosen.value.set_files({"name": "scan.png", "mimeType": "image/png", "buffer": png()})
-    assert page.locator("#auto-submit").is_enabled()
+    page.locator("#auto-viewer").wait_for(state="visible")
     page.locator("#tab-analyze").click()
     page.locator("#drop").wait_for(state="visible")
     with page.expect_file_chooser() as chosen:
@@ -123,8 +124,8 @@ def test_browser_upload_pass_viewer_tasks_and_navigation(browser_page):
     assert page.locator("#view-auto-analyse").is_visible()
     assert not page.locator("#view-analyze").is_visible()
     assert page.locator("#auto-drop").is_visible()
-    assert page.locator("#auto-upload-form .auto-labels input:visible").count() == 4
-    assert page.locator("#auto-submit").is_disabled()
+    assert page.locator("#auto-upload-form .auto-labels input:visible").count() == 0
+    assert page.locator("#auto-upload-form button:visible").count() == 0
     send_scan(page)
     assert not page.locator("#auto-upload-form").is_visible()
     assert page.locator("#auto-results-page").is_visible()
@@ -152,11 +153,89 @@ def test_browser_upload_pass_viewer_tasks_and_navigation(browser_page):
     assert not errors
 
 
+def test_browser_linepair_geometry_does_not_shift_on_analyze_handoff(browser_page, mod, passing, tmp_path):
+    import numpy as np
+    from PIL import Image
+    from phantom_qa.analysis.common import Ctx, rect_roi, segment
+    from phantom_qa.registration import Transform
+    page, errors = browser_page
+    # Odd detector dimensions force the PNG preview to round its smaller axis.
+    pixels = np.tile(np.linspace(20, 220, 3001, dtype=np.uint8), (2223, 1))
+    encoded = io.BytesIO()
+    Image.fromarray(pixels).save(encoded, format="PNG")
+    ctx = Ctx(pixels, Transform(np.array([[5., 0.], [0., -5.]]), np.array([1500., 1111.])), mod.pdef)
+    for index, group in enumerate(passing[0]["linepairs"]["groups"]):
+        center = [index * 15. - 35., 0.]
+        group["roi"] = rect_roi(ctx, center, [12.6, 12.6], 37., f"linepairs/{group['id']}")
+        group["profile_seg"] = segment(ctx, [center[0] - 8., -8.], [center[0] + 8., 8.],
+                                       f"linepairs/{group['id']}/profile")
+    with page.expect_response("**/api/auto-analyse") as uploaded:
+        page.locator("#auto-file").set_input_files({"name": "odd-detector.png", "mimeType": "image/png", "buffer": encoded.getvalue()})
+    page.locator("#auto-viewer").wait_for(state="visible")
+    record = uploaded.value.json()["analyses"][0]
+    geometry = record["geometry"]
+    before = page.locator("#auto-overlays").inner_html()
+    for group in geometry["linepairs"]["groups"]:
+        points = page.locator(f'#auto-overlays polygon[data-roi-id="{group["roi"]["id"]}"]').get_attribute("points")
+        assert [[float(n) for n in pair.split(",")] for pair in points.split()] == group["roi"]["corners_px"]
+    results_box = page.locator("#auto-feature-status").bounding_box()
+    image_box = page.locator("#auto-viewer").bounding_box()
+    controls_box = page.locator(".auto-viewer-toolbar").bounding_box()
+    assert results_box["y"] + results_box["height"] <= image_box["y"]
+    assert controls_box["y"] >= image_box["y"] + image_box["height"]
+    stroke = page.locator('#auto-overlays polygon[data-roi-id^="linepairs/"]').first.evaluate(
+        "node => parseFloat(getComputedStyle(node).strokeWidth) * new DOMMatrix(getComputedStyle(node.parentNode.parentNode).transform).a")
+    assert stroke == pytest.approx(2.6, rel=1e-5)
+    writes = []
+    page.on("request", lambda request: writes.append(request.url) if request.method != "GET" else None)
+    page.locator("#auto-open-analyze").click()
+    page.locator("#btn-back-d").wait_for(state="visible")
+    assert page.evaluate("S.geometry") == geometry
+    assert page.evaluate("ViewerTools.linepairRois(S.geometry).filter(e => e.drag).map(e => e.roi)") == [
+        group["roi"] for group in geometry["linepairs"]["groups"]]
+    assert page.evaluate("S.imgScale") == 1
+    page.locator("#tab-auto-analyse").click()
+    page.locator("#auto-viewer").wait_for(state="visible")
+    assert page.locator("#auto-overlays").inner_html() == before
+    assert mod.store.get(record["id"])["geometry"] == geometry
+    assert not writes and not errors
+    page.screenshot(path=str(tmp_path / "auto-results-desktop.png"), full_page=True)
+    page.set_viewport_size({"width": 650, "height": 900})
+    page.screenshot(path=str(tmp_path / "auto-results-mobile.png"), full_page=True)
+    page.set_viewport_size({"width": 360, "height": 800})
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / "auto-results-small-mobile.png"), full_page=True)
+
+
+def test_browser_manual_registration_is_available_after_detection_failure(browser_page, mod, monkeypatch):
+    from phantom_qa.registration import Registration, Transform
+    import numpy as np
+    page, errors = browser_page
+    def detect(scan, definition, corners_hint=None):
+        if corners_hint is None:
+            raise ValueError("Synthetic detection failure")
+        return Registration(Transform(np.array([[.16, 0.], [0., -.16]]), np.array([32., 32.])),
+                            np.asarray(corners_hint), 0., {})
+    monkeypatch.setattr(mod.pipeline, "run_stage_a", detect)
+    send_scan(page)
+    page.locator("#auto-open-analyze").click()
+    page.locator("#btn-manual-corners").wait_for(state="visible")
+    page.locator("#btn-manual-corners").click()
+    assert page.evaluate("S.mode") == "corners"
+    page.wait_for_function("S.imgEl !== null")
+    canvas = page.locator("#viewer").bounding_box()
+    for point in ([8, 8], [56, 8], [56, 56], [8, 56]):
+        position = page.evaluate("point => nat2scr(point)", point)
+        page.mouse.click(canvas["x"] + position[0], canvas["y"] + position[1])
+    page.locator("#btn-confirm-a").wait_for(state="visible")
+    assert not errors
+
+
 def test_browser_incomplete_measurement_keeps_orange_rois_and_opens_same_error_in_analyze(browser_page, passing):
     page, errors = browser_page
     passing[1]["uniformity"]["rows"][0]["snr"] = None
     send_scan(page)
-    assert page.locator("#auto-feature-status li.auto-attention").inner_text() == "Uniformity"
+    assert page.locator("#auto-feature-status li.auto-attention").inner_text().startswith("Uniformity")
     assert page.locator("#auto-overlays [stroke='#ffb45c']").count() == 5
     assert page.locator("#auto-feature-status small, #auto-technical").count() == 0
     page.locator("#auto-open-analyze").click()
@@ -173,7 +252,7 @@ def test_browser_orange_duplicate_and_failed_request(browser_page, passing):
     assert page.locator("#auto-feature-status li.auto-attention").count() == 1
     assert page.locator('#auto-tasks [data-task-type="repeat_scan"]').count() == 1
     assert page.locator("#auto-overlays [stroke='#ffb45c']").count() > 0
-    assert page.locator("#auto-feature-status li.auto-attention").inner_text() == "Uniformity"
+    assert page.locator("#auto-feature-status li.auto-attention").inner_text().startswith("Uniformity")
     assert "Uniformity" not in page.locator("#auto-tasks").inner_text()
     page.locator("#auto-new-scan").click()
     send_scan(page)  # exactly the same bytes
@@ -184,11 +263,10 @@ def test_browser_orange_duplicate_and_failed_request(browser_page, passing):
                content_type="application/json", body=json.dumps({"detail": "Test processing error"})))
     page.locator("#auto-new-scan").click()
     page.locator("#auto-file").set_input_files({"name": "scan.png", "mimeType": "image/png", "buffer": png()})
-    page.locator("#auto-submit").click()
     page.locator("#auto-error").wait_for(state="visible")
     assert "The upload could not be completed" in page.locator("#auto-error").inner_text()
     assert "Test processing error" not in page.locator("#auto-error").inner_text()
-    assert page.locator("#auto-submit").is_enabled()
+    assert page.locator("#auto-drop").get_attribute("aria-disabled") == "false"
     assert not page.locator("#auto-result").is_visible()
     assert not errors
 
@@ -215,13 +293,13 @@ def test_browser_viewer_fits_window_levels_zooms_and_pans_without_editing(browse
     check_fit()
     initial, overlays = matrix(), page.locator("#auto-overlays").inner_html()
     stroke = lambda: page.locator("#auto-overlays [stroke]").first.evaluate("node => parseFloat(getComputedStyle(node).strokeWidth)") * matrix()[0]
-    assert stroke() == pytest.approx(1.4, rel=1e-5)
+    assert stroke() == pytest.approx(2.6, rel=1e-5)
     automatic_url = image.get_attribute("src")
     writes = []
     page.on("request", lambda request: writes.append(request.url) if request.method != "GET" else None)
     page.locator("#auto-zoom-in").click()
     assert matrix()[0] == pytest.approx(initial[0] * 1.15, rel=1e-5)
-    assert stroke() == pytest.approx(1.4, rel=1e-5)
+    assert stroke() == pytest.approx(2.6, rel=1e-5)
     page.locator("#auto-zoom-out").click()
     assert matrix() == pytest.approx(initial, rel=1e-5)
     box = viewer.bounding_box()
@@ -271,10 +349,11 @@ def test_browser_viewer_fits_window_levels_zooms_and_pans_without_editing(browse
 
 def test_browser_metadata_field_correction_and_saved_revisions(browser_page, mod, alignment_case, pdef, tmp_path):
     page, errors = browser_page
-    page.locator('#auto-upload-form [name="site"]').fill(" Goma ")
-    page.locator('#auto-upload-form [name="phantom"]').fill("P1")
-    page.locator('#auto-upload-form [name="operator"]').fill("Operator")
-    page.locator('#auto-upload-form [name="notes"]').fill("Initial scan")
+    page.evaluate("""() => {
+        sessionStorage.setItem('lbl_site', ' Goma ');
+        sessionStorage.setItem('lbl_phantom', 'P1');
+        sessionStorage.setItem('lbl_operator', 'Operator');
+    }""")
     with page.expect_response("**/api/auto-analyse") as uploaded:
         send_scan(page)
     aid = uploaded.value.json()["analyses"][0]["id"]

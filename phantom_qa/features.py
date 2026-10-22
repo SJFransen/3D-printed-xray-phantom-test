@@ -133,7 +133,12 @@ def rect_mask(shape, center, size, angle_deg: float = 0.0):
     a = np.deg2rad(angle_deg)
     lx = dx * np.cos(a) + dy * np.sin(a)
     ly = -dx * np.sin(a) + dy * np.cos(a)
-    return (np.abs(lx) <= size[0] / 2) & (np.abs(ly) <= size[1] / 2)
+    # Half-open bounds keep an integral-width rectangle at a stable sample
+    # count when translated across the pixel grid. The tolerance absorbs the
+    # determinant/rotation roundoff (e.g. a 70 px side becoming 69.99999999999999).
+    eps = 1e-9
+    return ((lx >= -size[0] / 2 - eps) & (lx < size[0] / 2 - eps)
+            & (ly >= -size[1] / 2 - eps) & (ly < size[1] / 2 - eps))
 
 
 def circle_mask(shape, center, radius):

@@ -48,7 +48,9 @@ def _extract_dicom_meta(ds) -> dict:
     tags = [
         "SOPInstanceUID", "SOPClassUID", "Modality", "Manufacturer",
         "ManufacturerModelName", "StationName", "DetectorID", "DetectorType",
-        "StudyDate", "StudyTime", "SeriesTime", "AcquisitionTime",
+        "StudyDate", "StudyTime", "SeriesDate", "SeriesTime",
+        "AcquisitionDate", "AcquisitionTime", "ContentDate", "ContentTime",
+        "InstanceCreationDate", "DeviceSerialNumber",
         "StudyDescription", "SeriesDescription", "ProtocolName",
         "BodyPartExamined", "ViewPosition", "PatientOrientation",
         "KVP", "ExposureTime", "XRayTubeCurrent", "Exposure", "ExposureInuAs",
@@ -86,7 +88,17 @@ def protocol_signature(meta: dict) -> str:
     proc = str(meta.get("AcquisitionDeviceProcessingDescription", ""))
     # Keep the processing family (e.g. "UNIQUE: S:200 L:4.0"), drop per-exposure params.
     proc_family = " ".join(proc.split()[:3]) if proc else "no-processing-info"
-    return f"{model} | {kvp} kV | {spacing[0]} mm/px | {proc_family}"
+    signature = f"{model} | {kvp} kV | {spacing[0]} mm/px | {proc_family}"
+    # Keep the legacy signature when identity is unavailable. Identified scans
+    # use a new namespace; never silently match them to an ambiguous old reference.
+    identity = {key: str(meta[key]).strip() for key in
+                ("DeviceSerialNumber", "DetectorID", "StationName")
+                if str(meta.get(key) or "").strip()}
+    if identity:
+        import json
+        machine = _sha256(json.dumps(identity, sort_keys=True).encode())[:20]
+        signature += f" | machine-v2:{machine}"
+    return signature
 
 
 def load_dicom_bytes(data: bytes, source_name: str) -> ScanData:

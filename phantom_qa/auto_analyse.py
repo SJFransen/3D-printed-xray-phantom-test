@@ -98,7 +98,7 @@ def result_payload(record, pdef, duplicate, *, saved):
             "overall": "pass" if all_pass else "attention", "status": record.get("status"),
             "message": "All features passed. No further action required." if all_pass
                        else "One or more features need attention.",
-            "features": features, "results": results,
+            "features": features, "results": results, "geometry": geometry,
             **{key: record.get(key, "") for key in ("site", "phantom", "operator", "notes")},
             "tasks": generate_tasks(record["id"], record.get("created_at"), features, duplicate),
             "validation_status": "", "manually_reviewed": False,

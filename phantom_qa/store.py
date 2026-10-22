@@ -149,6 +149,10 @@ VALIDATION_LABELS = {
 }
 
 
+class AnalysisConflict(ValueError):
+    """The analysis changed after a request read its inputs."""
+
+
 class Store:
     #: JSON blob columns that :meth:`mutate_json` is allowed to touch.
     JSON_FIELDS = frozenset({"meta", "reg", "geometry", "results", "audit"})
@@ -368,6 +372,7 @@ class Store:
 
         Leaving them would show a report whose overlay comes from the new ROIs
         and whose numbers come from the old ones."""
+        Store._check_edit(c, aid)
         if invalidate_results:
             Store._archive_record(c, aid, "before geometry change", results_only=True)
             c.execute(
@@ -391,9 +396,40 @@ class Store:
         with self._conn() as c:
             c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
 
+    @staticmethod
+    def _check_edit(c, aid, expected=None, *, check_geometry=False,
+                    allow_validated=False):
+        row = c.execute("SELECT * FROM analyses WHERE id=?", (aid,)).fetchone()
+        if row is None:
+            raise KeyError(aid)
+        if row["validation_status"] and not allow_validated:
+            raise AnalysisConflict("This analysis has been signed off. Withdraw validation before editing.")
+        if expected is not None:
+            keys = ("reg", "geometry") if check_geometry else ("reg",)
+            for key in keys:
+                try:
+                    current = json.loads(row[key + "_json"] or "null")
+                except (TypeError, ValueError):
+                    current = None
+                if current != expected.get(key):
+                    raise AnalysisConflict("Measuring positions changed. Reopen the analysis and retry.")
+            for key in ("validation_status", "validated_by", "validated_at", "validation_comment"):
+                if (row[key] or "") != (expected.get(key) or ""):
+                    raise AnalysisConflict("Validation changed. Reopen the analysis and retry.")
+        return row
+
+    def save_registration(self, aid, expected, registration):
+        with self.write_transaction() as c:
+            self._check_edit(c, aid, expected, check_geometry=True)
+            self._archive_record(c, aid, "before registration", results_only=True)
+            c.execute("UPDATE analyses SET reg_json=?,geometry_json=NULL,results_json=NULL,"
+                      " geometry_seq=0,stage='A',status='draft',layout_source='' WHERE id=?",
+                      (json.dumps(registration), aid))
+            c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
+
     def set_geometry_baseline(self, aid: str, geometry, *, action: str = "propose",
                               user: str = "", detail=None,
-                              invalidate_results: bool = True) -> dict:
+                              invalidate_results: bool = True, expected=None) -> dict:
         """Install a fresh automatic proposal as the new seq-0 baseline.
 
         Everything the user had done before is dropped along with the history:
@@ -404,8 +440,7 @@ class Store:
         re-analysis. There the two already agree, so blanking the results would
         destroy exactly the work that was done."""
         with self.write_transaction() as c:
-            if c.execute("SELECT 1 FROM analyses WHERE id=?", (aid,)).fetchone() is None:
-                raise KeyError(aid)
+            self._check_edit(c, aid, expected, check_geometry=True)
             c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
             c.execute(
                 "INSERT INTO geometry_history (analysis_id, seq, created_at,"
@@ -417,7 +452,7 @@ class Store:
             return self._hist_state(c, aid)
 
     def mutate_geometry(self, aid: str, fn, *, action: str, user: str = "",
-                        detail=None, invalidate_results: bool = True):
+                        detail=None, invalidate_results: bool = True, expected=None):
         """Edit the geometry blob and record an undo state, in ONE transaction.
 
         ``fn`` receives the decoded geometry, mutates it in place and may return
@@ -429,10 +464,7 @@ class Store:
         connection which, in WAL mode, reads the pre-transaction snapshot and
         blocks on the write lock."""
         with self.write_transaction() as c:
-            row = c.execute("SELECT geometry_json FROM analyses WHERE id=?",
-                            (aid,)).fetchone()
-            if row is None:
-                raise KeyError(aid)
+            row = self._check_edit(c, aid, expected)
             geometry = self._loads_geometry(row["geometry_json"], aid)
             out = fn(geometry)
             seq = self._push_state(c, aid, geometry, action=action, user=user,
@@ -441,11 +473,10 @@ class Store:
             return out, self._hist_state(c, aid)
 
     def replace_geometry(self, aid: str, geometry, *, action: str,
-                         user: str = "", detail=None) -> dict:
+                         user: str = "", detail=None, expected=None) -> dict:
         """Append a wholly new geometry state (a reset) as an undoable edit."""
         with self.write_transaction() as c:
-            if c.execute("SELECT 1 FROM analyses WHERE id=?", (aid,)).fetchone() is None:
-                raise KeyError(aid)
+            self._check_edit(c, aid, expected, check_geometry=True)
             seq = self._push_state(c, aid, geometry, action=action, user=user,
                                    detail=detail)
             self._write_geometry(c, aid, geometry, seq, True)
@@ -460,7 +491,7 @@ class Store:
             return None
         return self._unpack_or_none(row["geometry_z"], f"{aid} seq={seq}")
 
-    def _step_geometry(self, aid: str, direction: int) -> dict:
+    def _step_geometry(self, aid: str, direction: int, expected=None) -> dict:
         """Move the cursor to the NEAREST SURVIVING state and restore it.
 
         Nearest rather than exactly one back, because the depth trim leaves a
@@ -475,6 +506,7 @@ class Store:
         Both ends run inside the transaction that read the cursor, so a
         double-clicked Undo cannot step twice off one reading."""
         with self.write_transaction() as c:
+            self._check_edit(c, aid, expected)
             state = self._hist_state(c, aid)
             if direction < 0:
                 row = c.execute(
@@ -501,11 +533,11 @@ class Store:
         out["action"] = row["action"]
         return out
 
-    def undo_geometry(self, aid: str) -> dict:
-        return self._step_geometry(aid, -1)
+    def undo_geometry(self, aid: str, expected=None) -> dict:
+        return self._step_geometry(aid, -1, expected)
 
-    def redo_geometry(self, aid: str) -> dict:
-        return self._step_geometry(aid, +1)
+    def redo_geometry(self, aid: str, expected=None) -> dict:
+        return self._step_geometry(aid, +1, expected)
 
     # ------------------------------------------------- per-phantom layouts
 
@@ -903,6 +935,27 @@ class Store:
                 c.execute("UPDATE analyses SET " + ",".join(f"{key}=?" for key in changed) + " WHERE id=?",
                           [*changed.values(), aid])
         return changed
+
+    def save_reanalysis(self, aid, expected, results, status, *, algo_version,
+                        pdef_version, registration=None, geometry=None,
+                        include_validated=False, user="cli"):
+        """Commit maintenance work only against the snapshot it measured."""
+        with self.write_transaction() as c:
+            row = self._check_edit(c, aid, expected, check_geometry=True,
+                                   allow_validated=include_validated)
+            if row["sid_mm"] != expected.get("sid_mm"):
+                raise AnalysisConflict("SID changed during reanalysis. Retry with the current inputs.")
+            self._archive_record(c, aid, "before reanalysis", user)
+            c.execute("UPDATE analyses SET results_json=?,status=?,algo_version=?,pdef_version=? WHERE id=?",
+                      (json.dumps(results), status, algo_version, pdef_version, aid))
+            if registration is not None:
+                c.execute("UPDATE analyses SET reg_json=?,geometry_json=?,geometry_seq=0,layout_source='auto' WHERE id=?",
+                          (json.dumps(registration), json.dumps(geometry), aid))
+                c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
+                c.execute("INSERT INTO geometry_history (analysis_id,seq,created_at,user,action,geometry_z)"
+                          " VALUES (?,0,?,?,?,?)", (aid, time.strftime("%Y-%m-%d %H:%M:%S"),
+                                                    user, "reanalyze", self._pack(geometry)))
+            self._archive_record(c, aid, "reanalysed", user)
 
     def audit(self, aid: str, stage: str, action: str, detail=None, *, user=""):
         """Append one entry to the record's own audit trail.

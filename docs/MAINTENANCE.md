@@ -343,3 +343,26 @@ python -m phantom_qa.manage checkpoint            # fold the WAL into the databa
 python -m phantom_qa.manage outdated              # analyses predating this version
 python -m phantom_qa.manage reanalyze [options]   # recompute stored analyses
 ```
+
+## Audit fixes in version 1.1.5
+
+New DICOM uploads include available machine identity (device serial number,
+detector ID and station name) in a `machine-v2` protocol signature. Different
+machines of the same model no longer silently share a reference. Historical
+signatures and archived reports are preserved; an ambiguous legacy reference
+is never automatically matched to an identified new scan. To qualify an old
+scan as a reference for the new signature, upload its source again using the
+explicit duplicate override in Analyze, check it, then select it as the reference.
+No existing baseline is silently reassigned or deleted. Scans without machine
+identity retain the legacy signature and cannot distinguish unknown machines.
+
+Both maintenance reanalysis modes now detect concurrent geometry, registration,
+SID and validation changes and return a conflict instead of overwriting newer
+work. Explicit `--include-validated` remains supported, but still requires the
+same validation snapshot at commit. Back up the database and uploads before
+maintenance; signed and historical results are not automatically recomputed.
+
+Version 1.1.5 also makes rectangle boundary sampling consistent under translation.
+Reanalysis may therefore slightly change measurements whose ROI edge previously
+coincided with a pixel centre. QA acceptance thresholds are unchanged.
+

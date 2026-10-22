@@ -1,8 +1,11 @@
 # Auto Analyze
 
-Auto Analyze is the first tab. It uses the same upload template and controller
-as Analyze: choose or drop
-a scan, enter optional site/phantom/operator/notes, then press **Upload & analyze**.
+Auto Analyze is the first tab. Its upload screen contains one control:
+**Drop DICOM file here**. Drop a scan or activate the area with the mouse,
+Enter or Space to choose a file; analysis starts immediately. The shared upload
+controller uses the remembered site, phantom and operator from the current
+browser session. Identification can be edited in Analyze; no new identity is
+inferred from the file name.
 The page switches to processing and then a simplified results screen with a
 read-only phantom viewer and To Do panel. **New scan** returns to upload.
 
@@ -19,8 +22,9 @@ the preview, never the measured pixels, ROI positions or stored results. Automat
 window reset preserves zoom/pan; fit restores the full scan. Fitted scans also
 refit when the viewport changes size.
 
-Green borders mean PASS; orange borders mean attention. Feature labels have
-colored borders without explanations, measurement summaries or technical detail.
+Feature results sit above the image, with PASS or Attention beside each label.
+Window/centre controls sit below it. Green ROI outlines mean PASS; orange means
+attention. Outlines stay 2.6 screen pixels thick when fitting or zooming.
 Existing proposed ROIs remain visible in orange when detection or measurement
 is incomplete, including nominal fallback proposals. Invalid coordinates cannot
 be plotted, and no new ROI is invented when registration/proposal fails entirely.
@@ -42,6 +46,11 @@ that record. Going back through the wizard permits corrections; the results stag
 then recomputes from the saved positions. Returning to Auto Analyze refreshes the
 saved result. Signed-off records retain the protected workflow. No review or
 validation is assigned automatically.
+
+Both viewers use original detector-pixel coordinates, including when an odd-size
+image is rounded while generating its smaller PNG preview. They share the same
+line-pair ROI selection function and the exact saved geometry. Opening either
+view changes no geometry, measurements, profile defaults or revisions.
 
 ## Shared results and the line-pair correction
 
@@ -66,7 +75,9 @@ An incomplete apparent pass becomes an analysis error in both flows. Raw quality
 verdicts remain in `measurement_status`; shared `_assessment`, `analysis_issues`
 and `reasons` retain technical diagnostics for Analyze, reports and export.
 
-The result version is **1.1.4** so older saved assessments can be distinguished.
+The result version is **1.1.5** so older saved assessments can be distinguished.
+Rectangle sampling now uses half-open boundaries with a floating-point tolerance;
+an integral-size ROI no longer loses a row of pixels due to scale roundoff.
 Existing records are not silently rewritten. Recompute an unsigned record through
 Analyze or use the existing maintenance reanalysis command when an update is
 needed. Administrator sign-off remains protected.
@@ -79,7 +90,7 @@ needed. Administrator sign-off remains protected.
 | `phantom_qa/webapp/auto_analyse.py` | Optional upload route and persistence coordination |
 | `phantom_qa/analysis/assessment.py` | Shared result checks and proposed overlay extraction |
 | `phantom_qa/pipeline.py` | Runs the shared checks after existing measurements |
-| `phantom_qa/__init__.py` | Result version 1.1.4 |
+| `phantom_qa/__init__.py` | Result version 1.1.5 |
 | `phantom_qa/webapp/main.py` | Shared registration/proposal/compute/default orchestration, revision/report APIs and persistence |
 | `phantom_qa/store.py` | Atomic duplicate safeguard, computation commit and durable revision storage |
 | `phantom_qa/report.py` | Shared report renderer; incomplete sections preserve the rest of the report |
@@ -108,7 +119,8 @@ normal saved-phantom-layout default, including the existing agreement gate; the
 original detection remains geometry state zero. Automatic execution never saves
 a phantom profile on an operator's behalf. The SID default is 1000 mm.
 
-Both pages use `scan-upload-template` and `UploadForm.mount()`, along with the
+Both pages use `scan-upload-template` and `UploadForm.mount()` (compact automatic
+submission in Auto Analyze), along with the
 same backend upload validation and source storage. Blank labels on unsigned
 duplicates can be filled from explicitly supplied upload labels, with an audit
 event. Existing nonempty labels and signed records are preserved. The current
@@ -265,3 +277,18 @@ Upload cache regression fix on 21 October 2026:
   then verifies both file choosers and an Analyze upload after the fix.
 - The restarted local app was checked in Chrome on desktop and mobile. Both
   upload forms render without browser errors; no saved scan was changed.
+
+Version 1.1.5 audit fixes and compact Auto Analyze validation:
+
+- Full regression run: **882 passed, 36 skipped**, with 36 passing subtests.
+  The previously failing wedge pixel-count test now passes. The skips require
+  absent reference fixtures, except the Git-tracking check in the isolated copy.
+- Final affected checks: **131 passed**, including three additional tests for
+  invalid SID values in legacy records, concurrency and all browser journeys.
+  All five JavaScript suites passed.
+- A copied real DICOM produced identical complete geometry and all five result
+  groups through fresh Auto Analyze and Analyze runs. A copied saved DICOM also
+  retained all five line-pair ROIs through the viewer round trip.
+- Desktop, 650-pixel and 360-pixel layouts were inspected. Feature results are
+  above the image, window controls below it, and no extra upload options appear.
+  Validation used disposable databases; existing saved analyses were unchanged.

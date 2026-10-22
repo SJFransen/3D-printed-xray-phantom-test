@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -25,6 +26,8 @@ def main(argv=None):
     ap.add_argument("--out", default="qa_output", help="output directory")
     ap.add_argument("--sid", type=float, default=1000.0, help="SID in mm")
     args = ap.parse_args(argv)
+    if not math.isfinite(args.sid) or args.sid <= 0:
+        ap.error("--sid must be a finite positive distance in mm")
 
     pdef = load_default()
     scans = ingest.load_path(args.path)
