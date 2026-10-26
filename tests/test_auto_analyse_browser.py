@@ -184,10 +184,15 @@ def test_browser_history_settings_returns_to_saved_results(browser_page, mod, si
         mod.store.update(aid, validation_status="validated", validated_by="Reviewer")
     before = mod.store.get(aid)
     writes = []
-    page.on("request", lambda request: writes.append(request.url) if request.method == "POST" else None)
     page.locator("#tab-history").click()
     page.locator(f'#history-table a.open[data-id="{aid}"]').click()
+    page.locator("#auto-result").wait_for(state="visible")
+    assert page.locator("#view-analyze").is_hidden()
+    page.locator("#auto-open-analyze").click()
+    if not signed_off:
+        page.locator("#btn-confirm-e").click()
     page.locator("#btn-back-e").wait_for(state="visible")
+    page.on("request", lambda request: writes.append(request.url) if request.method == "POST" else None)
     page.set_viewport_size({"width": 1100, "height": 650})
     page.locator("#stage-content").evaluate("node => { node.scrollTop = node.scrollHeight; }")
     button = page.locator("#btn-back-e")
@@ -227,9 +232,11 @@ def test_browser_upload_forms_survive_cached_controllers_from_previous_release(b
     with page.expect_response("**/api/uploads/preview"):
         chosen.value.set_files({"name": "scan.png", "mimeType": "image/png", "buffer": png()})
     page.locator("#auto-site").fill("Test hospital")
-    page.locator("#upload-workflow").select_option("analyze")
     page.locator("#auto-submit").click()
-    page.locator('#stage-nav li.active[data-stage="A"]').wait_for(state="visible")
+    page.locator("#auto-result").wait_for(state="visible")
+    assert page.locator("#upload-workflow").count() == 0
+    page.locator("#auto-open-analyze").click()
+    page.locator('#stage-nav li.active[data-stage="E"]').wait_for(state="visible")
 
     assert not errors
 
@@ -260,12 +267,13 @@ def test_browser_upload_pass_viewer_tasks_and_navigation(browser_page):
     page.locator("#history-table tbody tr").first.wait_for(state="visible")
     assert not page.locator("#view-auto-analyse").is_visible()
     page.locator("#tab-auto-analyse").click()
+    page.locator("#auto-viewer").wait_for(state="visible")
     assert page.locator("#view-auto-analyse").is_visible() and not page.locator("#view-history").is_visible()
     # Responsive two-column layout collapses into one column on a small screen.
     page.set_viewport_size({"width": 650, "height": 900})
     assert page.locator(".auto-results-grid").evaluate("node => getComputedStyle(node).gridTemplateColumns.split(' ').length") == 1
     page.locator("#auto-new-scan").click()
-    assert page.locator("#auto-upload-form").is_visible()
+    page.locator("#auto-upload-form").wait_for(state="visible")
     assert not page.locator("#auto-results-page").is_visible()
     assert not errors
 
@@ -460,6 +468,7 @@ def test_browser_viewer_fits_window_levels_zooms_and_pans_without_editing(browse
     page.locator("#tab-history").click()
     page.set_viewport_size({"width": 1280, "height": 800})
     page.locator("#tab-auto-analyse").click()
+    page.locator("#auto-viewer").wait_for(state="visible")
     page.wait_for_function("() => document.getElementById('auto-viewer-layer').getBoundingClientRect().bottom <= document.getElementById('auto-viewer').getBoundingClientRect().bottom")
     check_fit()
     assert not errors

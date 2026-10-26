@@ -384,7 +384,8 @@ def test_deadline_uses_stored_upload_timestamp(client, mod, algorithms):
 
 def test_auto_page_is_first_and_viewer_has_no_edit_handlers(client):
     page = client.get("/").text
-    assert page.index('id="tab-auto-analyse"') < page.index('id="tab-analyze"') < page.index('id="tab-history"')
+    assert page.index('id="tab-auto-analyse"') < page.index('id="tab-history"')
+    assert 'id="tab-analyze"' not in page and 'id="upload-workflow"' not in page
     source = client.get("/auto-analyse.js").text
     assert "pointerdown" not in source and "mousedown" not in source and "/roi" not in source
     assert "renderTasks" in source and "textContent" in source

@@ -10,8 +10,13 @@ History & Trends supports comparisons over time. There is no separate view
 selector; both workflows use the same measurements and acceptance criteria.
 
 All uploads use one page. Check the institution read from DICOM, or enter it
-when absent; supply the phantom ID and operator to identify the scan. Select
-Auto Analyze or Analyze step by step before submitting. Results save during
+when absent; supply the phantom ID and operator to identify the scan. Uploads
+always run in Auto Analyze. Use Open in Analyze to enter detailed review, and
+Go back to auto analyze to return to the same saved scan, completing pending
+measurements after corrections before showing the updated outcomes. Unchanged
+and signed-off results are reused. New scan closes both
+interfaces and clears their scan-specific state while keeping the saved record
+in History. Results save during
 analysis. Advanced settings contains validation, reference selection and exports;
 Back to results returns to recorded results without recomputing them.
 

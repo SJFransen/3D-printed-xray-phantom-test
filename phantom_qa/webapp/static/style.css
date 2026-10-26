@@ -27,6 +27,21 @@ header nav { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 
 main { display: flex; flex: 1; min-height: 0; }
 #view-history { display: block; overflow: auto; padding: 18px; }
+#view-analyze { flex-direction: column; padding: 16px; }
+#analysis-workspace { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.results-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-shrink: 0; }
+.results-toolbar h2 { margin: 0 auto 0 0; font-size: 20px; }
+#view-analyze .results-toolbar button { margin: 0; }
+.results-toolbar .hint { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 850px) {
+  #view-analyze { padding: 12px; overflow: auto; }
+  .results-toolbar { flex-wrap: wrap; }
+  #analysis-workspace { flex-direction: column; flex: none; }
+  #analysis-workspace #viewer-pane { height: 340px; flex: none; }
+  #analysis-workspace #wizard-pane { width: 100%; flex: none; min-width: 0; }
+  #analysis-workspace #stage-content { overflow: visible; }
+  #viewer-toolbar { flex-wrap: wrap; }
+}
 
 #viewer-pane { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
 #viewer-toolbar {
@@ -323,16 +338,3 @@ button.danger:disabled { opacity: 0.45; cursor: default; }
 .roi-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px;
   background: var(--panel); border: 1px solid var(--border);
   color: var(--muted); margin-left: 4px; }
-
-/* ---- duplicate-upload dialog ---- */
-#dup-backdrop {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 55;
-  display: flex; align-items: center; justify-content: center;
-}
-#dup-backdrop.hidden { display: none; }
-#dup-card {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-  padding: 20px 22px; width: 460px; max-width: 94vw;
-}
-#dup-card h3 { margin: 0 0 8px; font-size: 15px; }
-#dup-card .modal-actions { flex-wrap: wrap; }

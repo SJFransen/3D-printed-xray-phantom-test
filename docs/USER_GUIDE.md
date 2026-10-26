@@ -27,8 +27,7 @@ resets both controls to that scan's automatic window.
 
 ### Upload — choose the file and identify the scan
 
-Both workflows use one upload page. Choose Auto Analyze or Analyze step by step,
-then select the scan. The file is sent for an institution preview without creating
+Select the scan on the Auto Analyze upload page. The file is sent for an institution preview without creating
 a History record. Check the identification and press **Upload & analyze** to start.
 
 | Field | Purpose |
@@ -46,17 +45,16 @@ An archive containing different institutions requires a site choice for the batc
 
 Labels can be changed later at any time — see *Correcting the identification*.
 
-**A file that has already been analysed.** Every upload is fingerprinted with
-its SHA-256. If the same file is uploaded twice the program stops and shows the
-existing record instead of quietly creating a second one, because a duplicate
-would appear twice in History and count twice in every trend. Three choices are
-offered:
+**A file that has already been analysed.** Auto Analyze reopens the saved record
+instead of creating a second History entry or recomputing its results.
 
-| Choice | Effect |
-|---|---|
-| **Open the existing analysis** | Go to the record that already holds this file |
-| **Analyse again anyway** | Deliberately create a second record — for a re-analysis after a code or definition change |
-| **Cancel** | Do nothing |
+Use **Open in Analyze** for detailed inspection and correction. The **Go back to
+auto analyze** button above the image and stage overview returns to that saved
+scan. Changed measuring points or SID are saved and measured before Auto Analyze
+shows the updated results; unchanged results are reused. If this fails, Analyze
+stays open so you can retry. **New scan**, available in either toolbar, closes the scan in both interfaces
+and returns to upload. Saved records remain available in History; its **open**
+action displays the scan in Auto Analyze before detailed review.
 
 Re-uploading a file whose record was deleted is allowed and creates a new one —
 with no geometry, no edit history and no stored layout carried over from the

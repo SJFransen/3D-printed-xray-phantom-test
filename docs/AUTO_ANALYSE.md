@@ -1,6 +1,6 @@
 # Auto Analyze
 
-Auto Analyze is the first tab. Both workflows use this single upload page.
+Auto Analyze is the default workflow and the only upload page.
 Choose a file, check site / institution, phantom ID and operator, then submit.
 The institution comes from DICOM InstitutionName (0008,0080), falling back to
 SourceApplicationEntityTitle (0002,0016) in file metadata. Missing values require
@@ -8,8 +8,9 @@ manual site entry. Previewing a file creates no History record. Mixed-institutio
 archives require an explicit site on the page; the APIs also support per-member
 DICOM defaults when no override is supplied. Both APIs reject an archive with
 missing institutions before inserting any members.
-Select Auto Analyze for immediate processing or Analyze step by step for the
-wizard. Auto Analyze always shows operator outcomes; Analyze provides technical detail.
+Uploads always run automatically. Open in Analyze is the only entry into the
+detailed wizard; there is no Analyze tab or upload workflow selector. History
+opens saved scans in Auto Analyze first.
 See `USERS.md` and `../solutions/README.md`.
 
 The app page serves scripts and styles with content fingerprints in their URLs.
@@ -46,7 +47,9 @@ calendar month after the saved upload date, clamped at month end.
 **Open in Analyze** opens the same saved History record and displays its existing
 results without recomputing on entry. Site, phantom, operator and notes come from
 that record. Going back through the wizard permits corrections; the results stage
-then recomputes from the saved positions. Returning to Auto Analyze refreshes the
+then recomputes from the saved positions. Go back to auto analyze sits above the
+image and stage overview, in the same toolbar position as Open in Analyze.
+Returning waits for pending edits and refreshes the
 saved result. Signed-off records retain the protected workflow. No review or
 validation is assigned automatically.
 
@@ -327,3 +330,17 @@ The 1.2.1 correction removes the view selector and keeps Auto Analyze focused on
 operators. Detailed measurements remain in Analyze. Stage F has a sticky return
 button at the top; it opens saved stage E results, including signed-off records,
 without recomputing them.
+
+## Frontend navigation and new scans
+
+New scan is available in either results toolbar. It waits for outstanding edits,
+closes both viewers, clears scan IDs, result/geometry caches, tasks, overlays and
+selectors, and invalidates delayed image and result responses. Saved records
+remain in History. Returning to Auto Analyze reuses unchanged saved results.
+If manual edits invalidated measurements or changed SID, it waits for those
+edits to save and computes updated results before displaying them. A failure
+keeps Analyze open for retry; signed-off results are never recomputed.
+Deleting a scan also clears its cached selection, and an unavailable scan
+returns to the remaining scans or the upload page. Uploading is disabled during
+processing; active scan navigation is disabled while a transition is pending.
+These changes use existing APIs and require no backend or database change.

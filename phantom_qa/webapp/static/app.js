@@ -4,11 +4,11 @@
 const COLORS = { geometry: "#00c8ff", linepairs: "#ffd400", lowcontrast: "#ff7bda",
                  uniformity: "#7bff9f", wedge: "#ff9d5c", reg: "#ff4040" };
 const TESTS = ["geometry", "linepairs", "lowcontrast", "uniformity", "wedge"];
-const STAGES = ["U", "A", "B", "C", "D", "E", "F"];
+const STAGES = ["A", "B", "C", "D", "E", "F"];
 
 const S = {
   aid: null, record: null, reg: null, geometry: null, results: null, analysisRequest: 0,
-  baseline: null, stage: "U", sid: 1000,
+  baseline: null, stage: "A", sid: 1000,
   imgEl: null, imgScale: 1, nativeCols: 1, nativeRows: 1,
   view: { k: 1, tx: 0, ty: 0 },
   visible: { geometry: true, linepairs: true, lowcontrast: true,
@@ -22,6 +22,7 @@ const S = {
   lcAngleCommitted: 0, rotTargetId: null, previewPending: false,
 };
 const analysisWrites = new Map();
+let analyzeEnabled = false, navigationRequest = 0;
 
 /* Everything the viewer knows about ONE analysis. Cleared as a unit whenever
    an analysis is closed or deleted, so no fragment of the previous scan — a
@@ -39,6 +40,8 @@ function clearAnalysisState() {
   S.history = { seq: 0, undo_depth: 0, redo_depth: 0 };
   S.layoutSource = ""; S.phantomProfile = null;
   S.lcAngleCommitted = 0; S.rotTargetId = null; S.previewPending = false;
+  S.sid = 1000; S.nativeCols = 1; S.nativeRows = 1; S.imgScale = 1;
+  S.view = {k: 1, tx: 0, ty: 0}; S.stage = "A"; panning = null;
   resetWL();
   const d = document.querySelector("#roi-details");
   if (d) d.remove();
@@ -485,9 +488,11 @@ canvas.addEventListener("mouseup", async (ev) => {
     S.dragRoi = null; S.dragStart = null; S.dragMoved = false;
     if (!moved) {
       // A press that did not move is an inspect, not an edit.
+      const aid = S.aid, request = S.analysisRequest;
       try {
-        const r = await api(`api/analyses/${S.aid}/roi_stats?roi_id=`
+        const r = await api(`api/analyses/${aid}/roi_stats?roi_id=`
                             + encodeURIComponent(roi.id));
+        if (aid !== S.aid || request !== S.analysisRequest) return;
         showRoiDetails(r.roi, r.stats);
       } catch (e) { /* noop */ }
       draw();
@@ -515,9 +520,11 @@ canvas.addEventListener("mouseup", async (ev) => {
       const hit = hitRoi(pos);
       if (hit) {
         S.selectedRoi = hit.roi.id;
+        const aid = S.aid, request = S.analysisRequest;
         try {
-          const r = await api(`api/analyses/${S.aid}/roi_stats?roi_id=` +
+          const r = await api(`api/analyses/${aid}/roi_stats?roi_id=` +
                               encodeURIComponent(hit.roi.id));
+          if (aid !== S.aid || request !== S.analysisRequest) return;
           showRoiDetails(r.roi, r.stats);
         } catch (e) { /* noop */ }
         draw();
@@ -898,10 +905,12 @@ function renderIdentityBar() {
   $("#btn-validate").addEventListener("click", () =>
     setValidation(r, (v) => { Object.assign(S.record, v); renderIdentityBar(); }));
   $("#btn-edit-ident").addEventListener("click", async () => {
+    const aid = S.aid, request = S.analysisRequest;
     const vals = await editLabelsDialog(r, `Identification — ${r.id}`);
-    if (!vals) return;
+    if (!vals || aid !== S.aid || request !== S.analysisRequest) return;
     try {
-      const out = await postJSON(`api/analyses/${S.aid}/labels`, vals);
+      const out = await postJSON(`api/analyses/${aid}/labels`, vals);
+      if (aid !== S.aid || request !== S.analysisRequest) return;
       Object.assign(S.record, vals);
       // A stored layout belongs to the phantom label. Renaming the last
       // analysis off a label leaves that layout describing nothing, so it is
@@ -915,7 +924,9 @@ function renderIdentityBar() {
         status("Identification updated.");
       }
       await refreshProfileForRecord();
+      if (aid !== S.aid || request !== S.analysisRequest) return;
       renderIdentityBar();
+      if (S.stage === "E") S.useSavedResults = true;
       renderStage();
     } catch (e) { status("Could not save: " + e.message, true); }
   });
@@ -925,8 +936,10 @@ function renderIdentityBar() {
    than leaving Stage C advertising the previous phantom's. */
 async function refreshProfileForRecord() {
   if (!S.aid) return;
+  const aid = S.aid, request = S.analysisRequest;
   try {
-    const rec = await api(`api/analyses/${S.aid}`);
+    const rec = await api(`api/analyses/${aid}`);
+    if (aid !== S.aid || request !== S.analysisRequest) return;
     S.phantomProfile = rec.phantom_profile || null;
     S.record = { ...S.record, ...rec };
   } catch (e) { /* leave what we have */ }
@@ -971,43 +984,6 @@ function editLabelsDialog(rec, title = "Edit identification") {
     $("#m-cancel").onclick = () => done(null);
     back.onclick = (e) => { if (e.target === back) done(null); };
     document.onkeydown = (e) => { if (e.key === "Escape") done(null); };
-  });
-}
-
-
-/* Three-way choice for a re-uploaded file.
-
-   Deliberately not a confirm(): with two buttons, "Cancel" would have to mean
-   "analyse it again", so an operator dismissing the dialog would create the
-   very duplicate this check exists to prevent. Cancel must mean cancel. */
-function duplicateDialog(d) {
-  return new Promise((resolve) => {
-    // textContent, not innerHTML: site / phantom / notes are operator-supplied
-    $("#dup-id").textContent = d.id;
-    $("#dup-who").textContent =
-      [d.site, d.phantom].filter(Boolean).join(" / ") || "unlabelled";
-    $("#dup-when").textContent =
-      (d.acquired_at || d.created_at || "").slice(0, 16).replace("T", " ");
-    $("#dup-status").textContent = d.status || "-";
-
-    const back = $("#dup-backdrop");
-    back.classList.remove("hidden");
-    $("#dup-open").focus();
-
-    const done = (result) => {
-      back.classList.add("hidden");
-      $("#dup-open").onclick = null;
-      $("#dup-again").onclick = null;
-      $("#dup-cancel").onclick = null;
-      back.onclick = null;
-      document.onkeydown = null;
-      resolve(result);
-    };
-    $("#dup-open").onclick = () => done("open");
-    $("#dup-again").onclick = () => done("again");
-    $("#dup-cancel").onclick = () => done("cancel");
-    back.onclick = (e) => { if (e.target === back) done("cancel"); };
-    document.onkeydown = (e) => { if (e.key === "Escape") done("cancel"); };
   });
 }
 
@@ -1301,11 +1277,7 @@ async function deleteAnalysis(aid) {
             ? ` The stored measuring-point layout for phantom ${r.phantom} `
               + `was removed with it.`
             : ""));
-  if (S.aid === aid) {
-    clearAnalysisState();
-    setStage("U");
-    draw();
-  }
+  document.dispatchEvent(new CustomEvent("phantomqa:analysis-deleted", { detail: aid }));
   loadHistory();
 }
 
@@ -1322,7 +1294,7 @@ function setStage(st) {
     const s = li.dataset.stage;
     li.classList.toggle("active", s === st);
     li.classList.toggle("done",
-      STAGES.indexOf(s) < STAGES.indexOf(st) && s !== "U");
+      STAGES.indexOf(s) < STAGES.indexOf(st));
   });
   const rd = $("#roi-details");
   if (rd && st !== "C") { rd.remove(); S.rotTargetId = null; }
@@ -1337,8 +1309,10 @@ function setStage(st) {
 async function discardPreview() {
   S.previewPending = false;
   if (!S.aid) return;
+  const aid = S.aid, request = S.analysisRequest;
   try {
-    const rec = await api(`api/analyses/${S.aid}`);
+    const rec = await api(`api/analyses/${aid}`);
+    if (aid !== S.aid || request !== S.analysisRequest) return;
     S.geometry = rec.geometry;
     S.history = rec.history || S.history;
     renderStage();
@@ -1348,71 +1322,23 @@ async function discardPreview() {
 
 function renderStage() {
   const c = $("#stage-content");
-  ({ U: stageU, A: stageA, B: stageB, C: stageC, D: stageD, E: stageE,
+  ({ A: stageA, B: stageB, C: stageC, D: stageD, E: stageE,
      F: stageF }[S.stage])(c);
 }
 
-/* ---- Stage U: upload (choose file, fill identity, then confirm) ---- */
-async function stageU(c) {
-  c.innerHTML = '<p>Choose a scan on the shared upload page.</p>';
-  document.dispatchEvent(new CustomEvent("phantomqa:upload", {detail: "analyze"}));
-}
-
-async function uploadToAnalyze(upload) {
-  S.uploadForm = upload;
-  S.pendingFile = upload.nodes.file.files[0];
-  await uploadFile(S.pendingFile);
-}
-
-async function uploadFile(file, opts = {}) {
-  const upload = S.uploadForm;
-  upload.setBusy(true);
-  status("Uploading and registering…");
-  const fd = S.uploadForm.data();
-  if (opts.allowDuplicate) fd.append("allow_duplicate", "true");
-  try {
-    const r = await api("api/analyses", { method: "POST", body: fd });
-    const ok = r.analyses.filter(a => a.registered);
-    if (!r.analyses.length) throw new Error("no images found");
-    const notes = [];
-    if (r.analyses.length > 1)
-      notes.push(`${r.analyses.length} images found — opening the first; others `
-                 + `are in History.`);
-    if (r.phantom_profile)
-      notes.push(`A stored measuring-point layout for phantom `
-                 + `${r.phantom_profile.phantom} will be applied when you `
-                 + `confirm the registration.`);
-    S.pendingFile = null;
-    const first = ok[0] || r.analyses[0];
-    await openAnalysis(first.id);
-    if (notes.length) status(notes.join(" "));
-  } catch (e) {
-    if (e.duplicateOf && e.duplicateOf.length) {
-      const choice = await duplicateDialog(e.duplicateOf[0]);
-      if (choice === "open") { await openAnalysis(e.duplicateOf[0].id); return; }
-      if (choice === "again") {
-        await uploadFile(file, { allowDuplicate: true });
-        return;
-      }
-      status("Upload cancelled — the file was already analysed.");
-      if ($("#btn-upload")) $("#btn-upload").disabled = false;
-      return;
-    }
-    status("Upload failed: " + e.message, true);
-    if ($("#btn-upload")) $("#btn-upload").disabled = false;
-  } finally { upload.setBusy(false); }
-}
-
 async function openAnalysis(aid) {
+  if (!analyzeEnabled) return;
   // Full reset first: nothing of the previously open analysis may survive into
   // this one, not even a selected ROI id or a half-finished corner click.
   clearAnalysisState();
   S.aid = aid;
-  if (analysisWrites.has(aid)) await analysisWrites.get(aid);
   const request = S.analysisRequest;
+  if (analysisWrites.has(aid)) await analysisWrites.get(aid);
+  if (request !== S.analysisRequest || aid !== S.aid || !analyzeEnabled) return;
   const rec = await api(`api/analyses/${aid}`);
   if (request !== S.analysisRequest || aid !== S.aid) return;
   S.record = rec;
+  $("#analyze-identity").textContent = [rec.site, rec.phantom, rec.operator].filter(Boolean).join(" ? ");
   S.reg = rec.registration;
   S.geometry = rec.geometry;
   S.results = rec.results;
@@ -1425,7 +1351,8 @@ async function openAnalysis(aid) {
   updateWLReadout();
   loadImage();
   showTab("analyze");
-  setStage(!S.reg ? "A" : (rec.geometry ? (rec.results ? "F" : rec.stage || "B") : "A"));
+  const correctionStage = ["A", "B", "C", "D"].includes(rec.stage) ? rec.stage : "C";
+  setStage(!S.reg || !rec.geometry ? "A" : rec.results ? "F" : correctionStage);
 }
 
 /* ---- Stage A ---- */
@@ -1909,7 +1836,7 @@ async function stageD(c) {
     </div></div>
     ${reasonsBlock(gr.dimension_reasons, gr.dimension_status)}
     ${reasonsBlock(gr.field_reasons, gr.field_status)}
-    <p>SID <input type="number" id="sid-input" value="${S.sid}" step="10"> mm
+    <p>SID <input type="number" id="sid-input" value="${html_escape($("#sid-input").value)}" step="10"> mm
        <button class="secondary" id="btn-recompute-d">recompute</button></p>
     <p class="hint">Source-to-image distance, used to express the field
     deviation as a percentage. Change it only if this exposure used a different
@@ -1990,14 +1917,14 @@ function reasonsBlock(reasons, status) {
 
 /* ---- Stage E ---- */
 async function stageE(c) {
-  const aid = S.aid;
+  const aid = S.aid, analysisRevision = S.analysisRequest;
   c.innerHTML = `<h2>Stage E — Analysis</h2><p class="hint">${S.useSavedResults || signedOff() ? "Loading saved results…" : "Computing…"}</p>`;
   let r;
   try {
     if (S.useSavedResults || signedOff()) {
       if (!S.results) {
         const saved = await api(`api/analyses/${aid}`);
-        if (S.aid !== aid || S.stage !== "E") return;
+        if (S.aid !== aid || S.stage !== "E" || analysisRevision !== S.analysisRequest) return;
         S.record = saved; S.results = saved.results;
       }
       if (!S.results) throw new Error("No saved results are available. Return to dimensions to run the analysis.");
@@ -2005,9 +1932,9 @@ async function stageE(c) {
     } else {
       r = await postJSON(`api/analyses/${S.aid}/compute`, { sid_mm: S.sid });
     }
-    if (S.aid !== aid || S.stage !== "E") return;
+    if (S.aid !== aid || S.stage !== "E" || analysisRevision !== S.analysisRequest) return;
   } catch (e) {
-    if (S.aid !== aid || S.stage !== "E") return;
+    if (S.aid !== aid || S.stage !== "E" || analysisRevision !== S.analysisRequest) return;
     c.innerHTML = `<h2>Stage E — Analysis</h2>
       <p style="color:var(--fail)">${html_escape(e.message)}</p>
       <button class="secondary" id="btn-back-d">Back to dimensions</button>`;
@@ -2306,9 +2233,7 @@ function stageF(c) {
     mismatch — corruption, a wrong restore, or a swapped file.</p>
     <p class="mono" style="font-size:10.5px; word-break:break-all">
       ${(S.record && S.record.sha256) || ""}</p>
-    <button class="secondary" id="btn-verify">Verify source file</button>
-    <br>
-    <button class="secondary" id="btn-new">New analysis</button>`;
+    <button class="secondary" id="btn-verify">Verify source file</button>`;
   $("#btn-back-e").addEventListener("click", () => {
     S.results = S.results || S.record?.results;
     S.useSavedResults = true;
@@ -2350,11 +2275,7 @@ function stageF(c) {
       renderStage();
     }));
   $("#btn-verify").addEventListener("click", () => verifyAnalysis(S.aid));
-  $("#btn-new").addEventListener("click", () => {
-    clearAnalysisState();
-    setStage("U");
-    draw();
-  });
+
 }
 
 /* ================= mini charts ================= */
@@ -2446,28 +2367,78 @@ function drawLpCharts(res) {
 /* ================= history & trends ================= */
 
 function showTab(which) {
+  if (which === "analyze" && (!analyzeEnabled || !S.aid)) return;
   // Optional panels register through DOM events; Analyze has no dependency on them.
   document.dispatchEvent(new CustomEvent("phantomqa:tab", { detail: which }));
-  $("#tab-analyze").classList.toggle("active", which === "analyze");
   $("#tab-history").classList.toggle("active", which === "history");
   $("#view-analyze").classList.toggle("hidden", which !== "analyze");
   $("#view-history").classList.toggle("hidden", which !== "history");
   if (which === "history") loadHistory();
   if (which === "analyze") resizeCanvas();
 }
-$("#tab-analyze").addEventListener("click", () => {
-  if (!S.aid) document.dispatchEvent(new CustomEvent("phantomqa:upload", {detail: "analyze"}));
-  else showTab("analyze");
+$("#tab-history").addEventListener("click", async () => {
+  const intent = ++navigationRequest;
+  try {
+    await closeAnalysis();
+    if (intent === navigationRequest) showTab("history");
+  } catch (error) { status(error.message, true); }
 });
-$("#tab-history").addEventListener("click", () => showTab("history"));
+
+// Use the saved record to avoid recomputing unchanged or signed-off results.
+// closeAnalysis calls this only after outstanding measuring-point edits settle.
+async function completePendingAnalysis(aid) {
+  const rec = await api(`api/analyses/${encodeURIComponent(aid)}`);
+  const editing = S.aid === aid;
+  if ((rec.validation_status || "").trim()) return;
+  const sidInput = editing ? $("#sid-input") : null;
+  const sid = sidInput ? Number(sidInput.value) : editing ? S.sid : (rec.sid_mm || 1000);
+  if (rec.results && sid === (rec.sid_mm || 1000)) return;
+  if (!rec.geometry) {
+    if (editing) throw new Error("Confirm the registration and measuring points before returning to Auto Analyze.");
+    return;
+  }
+  if (!Number.isFinite(sid) || sid <= 0) throw new Error("Enter a positive SID in millimetres before returning to Auto Analyze.");
+  status("Updating analysis results…");
+  const result = await postJSON(`api/analyses/${encodeURIComponent(aid)}/compute`, { sid_mm: sid });
+  if (S.aid === aid) {
+    S.sid = sid; S.results = result.results; S.baseline = result.baseline;
+    if (S.record) Object.assign(S.record, { results: result.results, sid_mm: sid, status: result.overall });
+  }
+  status("");
+}
+
+async function closeAnalysis(beforeClose = null) {
+  const aid = S.aid, request = S.analysisRequest;
+  $("#view-analyze").inert = true;
+  try {
+    while (aid && analysisWrites.has(aid)) await analysisWrites.get(aid);
+    if (request !== S.analysisRequest || aid !== S.aid) return aid;
+    if (beforeClose) await beforeClose();
+    if (request !== S.analysisRequest || aid !== S.aid) return aid;
+    analyzeEnabled = false;
+    clearAnalysisState();
+    $("#stage-content").replaceChildren();
+    $("#identity-bar").replaceChildren();
+    $("#analyze-identity").textContent = "";
+    document.querySelectorAll("#stage-nav li").forEach(li => li.classList.remove("active", "done"));
+    draw();
+    return aid;
+  } finally { $("#view-analyze").inert = false; }
+}
+
+async function enterAnalyze(aid) {
+  const intent = ++navigationRequest;
+  await closeAnalysis();
+  if (intent !== navigationRequest) return;
+  analyzeEnabled = true;
+  await openAnalysis(aid);
+  if (intent === navigationRequest && S.aid === aid && S.reg && S.geometry && S.results && !signedOff()) {
+    S.useSavedResults = true; setStage("E");
+  }
+}
+
 document.addEventListener("phantomqa:open-analysis", event => {
-  if (typeof event.detail !== "string") return;
-  const aid = event.detail;
-  openAnalysis(aid).then(() => {
-    if (S.aid === aid && S.reg && S.geometry && !signedOff()) {
-      S.useSavedResults = true; setStage("E");
-    }
-  }).catch(error => status(error.message, true));
+  if (typeof event.detail === "string") enterAnalyze(event.detail).catch(error => status(error.message, true));
 });
 
 /* current filter + selection state */
@@ -2568,7 +2539,7 @@ async function loadHistory() {
   });
   tb.querySelectorAll("a.open").forEach(a => a.addEventListener("click", (e) => {
     e.preventDefault();
-    openAnalysis(a.dataset.id);
+    document.dispatchEvent(new CustomEvent("phantomqa:open-auto-analysis", {detail: a.dataset.id}));
   }));
   tb.querySelectorAll("a.base").forEach(a => a.addEventListener("click", async (e) => {
     e.preventDefault();
@@ -3074,6 +3045,6 @@ async function initAuth() {
 
 /* ================= init ================= */
 renderToggles();
-setStage("U");
+
 resizeCanvas();
 initAuth();

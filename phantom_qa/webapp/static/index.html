@@ -12,7 +12,6 @@
   <h1>MSF Phantom QA</h1>
   <nav>
     <button id="tab-auto-analyse" class="tab active">Auto Analyze</button>
-    <button id="tab-analyze" class="tab">Analyze</button>
     <button id="tab-history" class="tab">History &amp; Trends</button>
   </nav>
   <span id="app-status"></span>
@@ -20,10 +19,6 @@
 
 <main id="view-auto-analyse">
   <form id="auto-upload-form" class="auto-card auto-upload-card">
-    <label>Workflow <select id="upload-workflow">
-      <option value="auto">Auto Analyze</option>
-      <option value="analyze">Analyze step by step</option>
-    </select></label>
     <div id="auto-upload-fields"></div>
     <p id="auto-error" class="hidden" role="alert"></p>
   </form>
@@ -72,6 +67,13 @@
 </main>
 
 <main id="view-analyze" class="hidden">
+  <div class="results-toolbar">
+    <h2>Analyze</h2>
+    <span id="analyze-identity" class="hint"></span>
+    <button id="analyze-new-scan" class="secondary" type="button">New scan</button>
+    <button id="analyze-return-auto" class="secondary" type="button">Go back to auto analyze</button>
+  </div>
+  <div id="analysis-workspace">
   <section id="viewer-pane">
     <div id="viewer-toolbar">
       <label title="window width, % of this image's own value range">
@@ -89,7 +91,6 @@
 
   <aside id="wizard-pane">
     <ol id="stage-nav">
-      <li data-stage="U">Upload</li>
       <li data-stage="A">A&nbsp;Registration</li>
       <li data-stage="B">B&nbsp;Patterns</li>
       <li data-stage="C">C&nbsp;Measuring&nbsp;points</li>
@@ -100,6 +101,7 @@
     <div id="identity-bar"></div>
     <div id="stage-content"></div>
   </aside>
+  </div>
 </main>
 
 <div id="modal-backdrop" class="hidden">
@@ -116,26 +118,6 @@
     <div class="modal-actions">
       <button id="m-save" class="primary">Save</button>
       <button id="m-cancel" class="secondary">Cancel</button>
-    </div>
-  </div>
-</div>
-
-<div id="dup-backdrop" class="hidden">
-  <div id="dup-card">
-    <h3>This file has already been analysed</h3>
-    <p class="hint">The uploaded file is byte-for-byte identical to an existing
-      record. Analysing it again would add a second row to History and count
-      twice in every trend.</p>
-    <div class="card"><div class="kv">
-      <div>Analysis</div><div class="mono" id="dup-id"></div>
-      <div>Site / phantom</div><div id="dup-who"></div>
-      <div>Recorded</div><div id="dup-when"></div>
-      <div>Result</div><div id="dup-status"></div>
-    </div></div>
-    <div class="modal-actions">
-      <button id="dup-open" class="primary">Open the existing analysis</button>
-      <button id="dup-again" class="secondary">Analyse again anyway</button>
-      <button id="dup-cancel" class="secondary">Cancel</button>
     </div>
   </div>
 </div>

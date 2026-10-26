@@ -12,11 +12,12 @@ const open = source.slice(source.indexOf('async function openAnalysis('),
   source.indexOf('/* ---- Stage A ---- */'));
 const controls = {}, images = [], timers = new Map(), pending = new Map();
 let timerId = 0, draws = 0, fits = 0;
-for (const id of ['#wl-width', '#wl-center', '#wl-readout', '#wl-reset', '#zoom-fit']) {
+for (const id of ['#wl-width', '#wl-center', '#wl-readout', '#wl-reset', '#zoom-fit', '#analyze-identity']) {
   controls[id] = { value: id === '#wl-width' ? 100 : 50, textContent: '', handlers: {},
     addEventListener(name, fn) { this.handlers[name] = fn; } };
 }
 const context = {
+  panning: null,
   $: id => controls[id], document: { querySelector: () => null },
   Image: class { constructor() { this.width = 100; images.push(this); } },
   setTimeout: fn => { timers.set(++timerId, fn); return timerId; },
@@ -87,6 +88,7 @@ async function run() {
   assert.equal(timers.size, 0);
   assert.equal(controls['#wl-readout'].textContent, '');
 
+  call('analyzeEnabled = true');
   const oldOpen = context.openAnalysis('old');
   const newOpen = context.openAnalysis('new');
   pending.get('api/analyses/new')(record(10, 110)); await newOpen;

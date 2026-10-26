@@ -51,50 +51,154 @@
     prefix: "auto", request,
     onUpload: () => { if (!busy) form.requestSubmit(); },
   });
-  function showUpload(workflow = "auto") {
-    if (busy) return;
-    get("upload-workflow").value = workflow;
-    get("view-analyze").classList.add("hidden");
-    get("view-history").classList.add("hidden");
-    get("tab-analyze").classList.remove("active");
-    get("tab-history").classList.remove("active");
-    get("auto-results-page").classList.add("hidden");
-    form.classList.remove("hidden");
-    document.dispatchEvent(new CustomEvent("phantomqa:tab", {detail: "auto-analyse"}));
+  let refreshVersion = 0, scanGeneration = 0, dirty = false, navigationBusy = false;
+  function updateControls() {
+    const blocked = busy || navigationBusy;
+    get("auto-new-scan").disabled = blocked;
+    get("analyze-new-scan").disabled = blocked;
+    get("analyze-return-auto").disabled = blocked;
+    get("auto-open-analyze").disabled = blocked || !analyses[activeIndex];
+    get("auto-scan-select").disabled = blocked;
+    get("tab-auto-analyse").disabled = blocked;
+    get("tab-history").disabled = blocked;
   }
-  document.addEventListener("phantomqa:upload", event => showUpload(event.detail));
-  let refreshVersion = 0, dirty = false;
+  function showResults() {
+    form.classList.add("hidden");
+    get("auto-results-page").classList.remove("hidden");
+    showTab("auto-analyse");
+  }
+  function setRecords(records, index = 0) {
+    analyses = records; activeIndex = index;
+    const select = get("auto-scan-select");
+    select.replaceChildren(...records.map((record, i) => {
+      const option = make("option", `${record.source_name} ? ${record.overall === "pass" ? "PASS" : "Attention required"}`);
+      option.value = i; return option;
+    }));
+    select.value = index;
+    get("auto-scan-choice").classList.toggle("hidden", records.length < 2);
+    renderResult(index); updateControls();
+  }
+  function resetAutoState() {
+    analyses = []; activeIndex = 0; dirty = false;
+    viewer.clear(); get("auto-image").removeAttribute("src");
+    for (const id of ["auto-overlays", "auto-feature-status", "auto-tasks", "auto-scan-select"])
+      get(id).replaceChildren();
+    get("auto-identity").textContent = ""; get("auto-progress").textContent = "";
+    for (const id of ["auto-result", "auto-results-page", "auto-image-error", "auto-error", "auto-scan-choice", "auto-viewer"])
+      get(id).classList.add("hidden");
+    upload.reset(); form.classList.remove("hidden");
+  }
+  function removeSavedRecord(aid) {
+    const index = analyses.findIndex(record => record.id === aid);
+    if (index < 0) return;
+    ++scanGeneration; ++refreshVersion;
+    const selected = analyses[activeIndex]?.id;
+    const remaining = analyses.filter(record => record.id !== aid);
+    if (!remaining.length) resetAutoState();
+    else setRecords(remaining, Math.max(0, remaining.findIndex(record => record.id === selected)));
+    updateControls();
+  }
   async function refreshSavedResult() {
-    const index = activeIndex, current = analyses[index], version = ++refreshVersion;
+    const index = activeIndex, current = analyses[index], version = ++refreshVersion, generation = scanGeneration;
     if (!current) return;
     try {
       const record = await request(`api/auto-analyse/${encodeURIComponent(current.id)}?duplicate=${current.duplicate}`);
-      if (version !== refreshVersion || analyses[index]?.id !== current.id) return;
+      if (generation !== scanGeneration || version !== refreshVersion || analyses[index]?.id !== current.id) return;
       analyses[index] = record; dirty = false;
       if (index === activeIndex && !get("auto-results-page").classList.contains("hidden")) renderResult(index);
-    } catch (_) { /* Keep the saved preview available; opening Analyze can retry the record. */ }
+    } catch (error) {
+      if (error.status === 404 && generation === scanGeneration && version === refreshVersion) removeSavedRecord(current.id);
+      // Other failures keep the preview available; returning from Analyze retries it.
+    }
   }
+  async function returnToAuto() {
+    if (busy || navigationBusy) return;
+    navigationBusy = true; updateControls();
+    const intent = ++navigationRequest, generation = scanGeneration;
+    const aid = S.aid || analyses[activeIndex]?.id, fromAnalyze = !!S.aid;
+    ++refreshVersion;
+    try {
+      const index = analyses.findIndex(record => record.id === aid);
+      let refreshed = null;
+      await closeAnalysis(async () => {
+        if (aid) {
+          if (fromAnalyze || dirty) await completePendingAnalysis(aid);
+          refreshed = await request(`api/auto-analyse/${encodeURIComponent(aid)}?duplicate=${index < 0 ? false : analyses[index].duplicate}`);
+        }
+      });
+      if (intent !== navigationRequest || generation !== scanGeneration) return;
+      if (aid) {
+        if (refreshed) {
+          if (index < 0) setRecords([refreshed]);
+          else { analyses[index] = refreshed; setRecords(analyses, index); }
+          dirty = false;
+        } else renderResult(index);
+        showResults();
+      } else showTab("auto-analyse");
+      status("");
+    } catch (error) {
+      if (error.status === 404 && intent === navigationRequest && generation === scanGeneration) {
+        await closeAnalysis(); removeSavedRecord(aid);
+        showTab("auto-analyse");
+        status("This scan is no longer available. Choose another scan or upload a new one.", true);
+      } else status("Could not return to Auto Analyze: " + error.message, true);
+    } finally { navigationBusy = false; updateControls(); }
+  }
+  async function openSavedResult(aid) {
+    if (busy || navigationBusy || typeof aid !== "string") return;
+    navigationBusy = true; updateControls();
+    const intent = ++navigationRequest, generation = ++scanGeneration;
+    ++refreshVersion;
+    try {
+      await closeAnalysis();
+      if (dirty && analyses.some(record => record.id === aid)) await completePendingAnalysis(aid);
+      const record = await request(`api/auto-analyse/${encodeURIComponent(aid)}`);
+      if (intent !== navigationRequest || generation !== scanGeneration) return;
+      dirty = false; setRecords([record]); showResults(); status("");
+    } catch (error) {
+      if (error.status === 404 && intent === navigationRequest && generation === scanGeneration) {
+        removeSavedRecord(aid); showTab("auto-analyse");
+        status("This scan is no longer available. Choose another scan or upload a new one.", true);
+      } else status("Could not open the saved scan: " + error.message, true);
+    }
+    finally {
+      navigationBusy = false; updateControls();
+      if (!page.classList.contains("hidden") && analyses[activeIndex]?.id === aid) get("auto-open-analyze").focus();
+    }
+  }
+  async function startNewScan() {
+    if (busy || navigationBusy) return;
+    navigationBusy = true; updateControls();
+    const intent = ++navigationRequest;
+    ++scanGeneration; ++refreshVersion;
+    try {
+      await closeAnalysis();
+      if (intent !== navigationRequest) return;
+      resetAutoState();
+      showTab("auto-analyse"); status(""); upload.nodes.drop.focus();
+    } catch (error) { status("Could not close the current scan: " + error.message, true); }
+    finally { navigationBusy = false; updateControls(); }
+  }
+  document.addEventListener("phantomqa:new-scan", startNewScan);
+  document.addEventListener("phantomqa:analysis-deleted", async event => {
+    if (S.aid === event.detail) await closeAnalysis();
+    removeSavedRecord(event.detail);
+  });
+  document.addEventListener("phantomqa:open-auto-analysis", event => openSavedResult(event.detail));
   document.addEventListener("phantomqa:analysis-changed", event => {
     if (!analyses.some(record => record.id === event.detail)) return;
     dirty = true;
-    if (!page.classList.contains("hidden")) refreshSavedResult();
+    if (!page.classList.contains("hidden") && !busy && !navigationBusy) refreshSavedResult();
   });
   document.addEventListener("phantomqa:tab", event => {
     page.classList.toggle("hidden", event.detail !== "auto-analyse");
     get("tab-auto-analyse").classList.toggle("active", event.detail === "auto-analyse");
-    if (event.detail === "auto-analyse") {
-      upload.loadLabels();
-      if (dirty) refreshSavedResult();
-    }
+    if (event.detail === "auto-analyse") upload.loadLabels();
   });
-  get("tab-auto-analyse").addEventListener("click", () => {
-    if (!form.classList.contains("hidden")) get("upload-workflow").value = "auto";
-    get("view-analyze").classList.add("hidden");
-    get("view-history").classList.add("hidden");
-    get("tab-analyze").classList.remove("active");
-    get("tab-history").classList.remove("active");
-    document.dispatchEvent(new CustomEvent("phantomqa:tab", {detail: "auto-analyse"}));
-  });
+  get("tab-auto-analyse").addEventListener("click", returnToAuto);
+  get("analyze-return-auto").addEventListener("click", returnToAuto);
+  get("auto-new-scan").addEventListener("click", startNewScan);
+  get("analyze-new-scan").addEventListener("click", startNewScan);
 
   async function loadTaskPanel(host, aid) {
     try {
@@ -195,6 +299,8 @@
   function renderResult(index) {
     activeIndex = index;
     const record = analyses[index];
+    if (!record) return;
+    get("auto-scan-select").value = index;
     get("auto-identity").textContent = [record.site, record.phantom, record.operator].filter(Boolean).join(" · ");
     get("auto-result").classList.remove("hidden");
     get("auto-image-error").classList.add("hidden");
@@ -211,32 +317,31 @@
       statuses.append(row);
     }
     renderTasks(record.tasks);
+    updateControls();
   }
 
-  get("auto-new-scan").addEventListener("click", () => {
-    if (busy) return;
-    viewer.clear();
-    get("auto-results-page").classList.add("hidden");
-    form.classList.remove("hidden");
-    refreshVersion++; upload.reset();
-    get("auto-error").classList.add("hidden");
-  });
-  get("auto-open-analyze").addEventListener("click", () => {
+  get("auto-open-analyze").addEventListener("click", async () => {
     const record = analyses[activeIndex];
-    if (record && !busy) document.dispatchEvent(new CustomEvent("phantomqa:open-analysis", {detail: record.id}));
+    if (!record || busy || navigationBusy) return;
+    navigationBusy = true; updateControls();
+    try {
+      await enterAnalyze(record.id);
+    } catch (error) { status("Could not open Analyze: " + error.message, true); }
+    finally {
+      navigationBusy = false; updateControls();
+      if (S.aid === record.id && !get("view-analyze").classList.contains("hidden")) get("analyze-return-auto").focus();
+    }
   });
-  get("auto-scan-select").addEventListener("change", event => renderResult(Number(event.target.value)));
+  get("auto-scan-select").addEventListener("change", event => {
+    if (!busy && !navigationBusy) renderResult(Number(event.target.value));
+  });
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    if (busy || !upload.nodes.file.files.length || !form.reportValidity()) return;
-    if (get("upload-workflow").value === "analyze") {
-      busy = true; upload.setBusy(true);
-      try { await uploadToAnalyze(upload); }
-      finally { busy = false; upload.setBusy(false); }
-      return;
-    }
+    if (busy || navigationBusy || !upload.nodes.file.files.length || !form.reportValidity()) return;
     viewer.clear();
     busy = true;
+    const generation = ++scanGeneration; ++refreshVersion;
+    analyses = []; activeIndex = 0; dirty = false; updateControls();
     const data = upload.data();
     form.classList.add("hidden");
     get("auto-results-page").classList.remove("hidden");
@@ -251,15 +356,9 @@
     get("auto-progress").textContent = "Analyzing…";
     try {
       const response = await request("api/auto-analyse", {method: "POST", body: data});
-      analyses = response.analyses;
-      if (!analyses.length) throw new Error("No scan images were found in this upload.");
-      const select = get("auto-scan-select");
-      select.replaceChildren(...analyses.map((record, index) => {
-        const option = make("option", `${record.source_name} — ${record.overall === "pass" ? "PASS" : "Attention required"}`);
-        option.value = index; return option;
-      }));
-      get("auto-scan-choice").classList.toggle("hidden", analyses.length < 2);
-      renderResult(0);
+      if (generation !== scanGeneration) return;
+      if (!response.analyses.length) throw new Error("No scan images were found in this upload.");
+      setRecords(response.analyses);
       get("auto-progress").textContent = `Analysis complete. ${analyses.length} scan${analyses.length === 1 ? "" : "s"} processed.`;
       upload.loadLabels();
     } catch (error) {
@@ -271,9 +370,9 @@
     } finally {
       busy = false; form.removeAttribute("aria-busy");
       get("auto-processing").classList.add("hidden");
-      get("auto-new-scan").disabled = false;
-      get("auto-open-analyze").disabled = false;
+      updateControls();
       upload.setBusy(false);
     }
   });
+  updateControls();
 })();
