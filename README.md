@@ -36,6 +36,7 @@ acted on rather than merely recorded.
 | [docs/ALGORITHMS.md](docs/ALGORITHMS.md) | How each measurement is computed, and its validation |
 | [docs/DESIGN.md](docs/DESIGN.md) | The main design decisions and why they were taken |
 | [docs/AUTO_ANALYSE.md](docs/AUTO_ANALYSE.md) | Automatic operator workflow, integration points, limitations and safe removal |
+| [docs/USERS.md](docs/USERS.md) | A description on how different users should be able to interact with the site |
 
 ## Requirements
 
