@@ -46,7 +46,7 @@ def _sha256(data: bytes) -> str:
 
 def _extract_dicom_meta(ds) -> dict:
     tags = [
-        "SOPInstanceUID", "SOPClassUID", "Modality", "Manufacturer",
+        "SOPInstanceUID", "SOPClassUID", "Modality", "Manufacturer", "InstitutionName",
         "ManufacturerModelName", "StationName", "DetectorID", "DetectorType",
         "StudyDate", "StudyTime", "SeriesDate", "SeriesTime",
         "AcquisitionDate", "AcquisitionTime", "ContentDate", "ContentTime",
@@ -77,7 +77,16 @@ def _extract_dicom_meta(ds) -> dict:
                     meta[t] = str(v)
             except Exception:
                 meta[t] = str(v)
+    source_ae = getattr(getattr(ds, "file_meta", None), "SourceApplicationEntityTitle", None)
+    if source_ae is not None:
+        meta["SourceApplicationEntityTitle"] = str(source_ae).strip()
     return meta
+
+
+def institution(meta: dict) -> str:
+    """Prefer the institution; the source AE is the requested fallback only."""
+    return str(meta.get("InstitutionName") or "").strip() or str(
+        meta.get("SourceApplicationEntityTitle") or "").strip()
 
 
 def protocol_signature(meta: dict) -> str:

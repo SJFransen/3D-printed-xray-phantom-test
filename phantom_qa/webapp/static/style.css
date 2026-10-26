@@ -6,6 +6,7 @@
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
+  display: flex; flex-direction: column; height: 100dvh; overflow: hidden;
   font-family: "Segoe UI", system-ui, sans-serif; font-size: 14px;
 }
 .mono { font-family: Consolas, monospace; }
@@ -13,16 +14,18 @@ body {
 .hint { color: var(--muted); font-size: 12px; }
 
 header {
+  flex-shrink: 0;
   display: flex; align-items: center; gap: 18px;
   padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
 }
 header h1 { font-size: 17px; margin: 0 12px 0 0; }
+header nav { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .tab { background: none; border: 1px solid var(--border); color: var(--text);
   padding: 5px 14px; border-radius: 6px; cursor: pointer; }
 .tab.active { background: var(--accent); border-color: var(--accent); color: #08131f; }
 #app-status { margin-left: auto; color: var(--muted); font-size: 12px; }
 
-main { display: flex; height: calc(100vh - 49px); }
+main { display: flex; flex: 1; min-height: 0; }
 #view-history { display: block; overflow: auto; padding: 18px; }
 
 #viewer-pane { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
@@ -56,6 +59,8 @@ main { display: flex; height: calc(100vh - 49px); }
   border-color: var(--accent); }
 #stage-nav li.done { color: var(--pass); }
 #stage-content { padding: 14px; overflow-y: auto; flex: 1 1 auto; }
+.stage-return { position: sticky; top: -14px; z-index: 1; padding: 8px 0; background: var(--panel); }
+.stage-return button { margin-top: 0; }
 
 #stage-content h2 { font-size: 15px; margin: 0 0 8px; }
 #stage-content h3 { font-size: 13px; margin: 14px 0 6px; }

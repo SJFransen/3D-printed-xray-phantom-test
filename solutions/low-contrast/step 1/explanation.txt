@@ -1,0 +1,4 @@
+Low-contrast circles
+
+Check that the block outline follows its printed border and that the circles line up with the printed discs.
+If the position looks wrong, ask the technician to review it in Analyze before interpreting the result.

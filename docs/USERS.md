@@ -1,6 +1,24 @@
 # User guide
 A description on how different users should be able to interact with the site
 
+## Workflows
+
+Auto Analyze is the X-ray operator workflow: simple outcomes, a read-only image
+and short To Do instructions. Analyze provides detailed measurements, manual
+corrections, reports and exports for technicians and medical physicists.
+History & Trends supports comparisons over time. There is no separate view
+selector; both workflows use the same measurements and acceptance criteria.
+
+All uploads use one page. Check the institution read from DICOM, or enter it
+when absent; supply the phantom ID and operator to identify the scan. Select
+Auto Analyze or Analyze step by step before submitting. Results save during
+analysis. Advanced settings contains validation, reference selection and exports;
+Back to results returns to recorded results without recomputing them.
+
+To Do guidance is available in Auto Analyze and the manual results step.
+Troubleshooting content is maintained in `solutions/`; see
+[`solutions/README.md`](../solutions/README.md) for authoring instructions.
+
 ## X-ray Operator
 Primary goal: Perform routine X-ray quality control measurements and submit the results with minimal effort.
 

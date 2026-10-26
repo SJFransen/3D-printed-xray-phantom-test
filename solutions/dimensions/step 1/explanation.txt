@@ -1,0 +1,4 @@
+Dimensions
+
+Check that the full phantom and its ruler marks are visible and correctly identified.
+If the position looks wrong, ask the technician to review it in Analyze before interpreting the result.

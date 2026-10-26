@@ -1354,10 +1354,14 @@ function renderStage() {
 
 /* ---- Stage U: upload (choose file, fill identity, then confirm) ---- */
 async function stageU(c) {
-  S.uploadForm = UploadForm.mount(c, {
-    request: api, onUpload: file => uploadFile(file),
-    onFile: file => { S.pendingFile = file; },
-  });
+  c.innerHTML = '<p>Choose a scan on the shared upload page.</p>';
+  document.dispatchEvent(new CustomEvent("phantomqa:upload", {detail: "analyze"}));
+}
+
+async function uploadToAnalyze(upload) {
+  S.uploadForm = upload;
+  S.pendingFile = upload.nodes.file.files[0];
+  await uploadFile(S.pendingFile);
 }
 
 async function uploadFile(file, opts = {}) {
@@ -1987,22 +1991,31 @@ function reasonsBlock(reasons, status) {
 /* ---- Stage E ---- */
 async function stageE(c) {
   const aid = S.aid;
-  c.innerHTML = `<h2>Stage E — Analysis</h2><p class="hint">Computing…</p>`;
+  c.innerHTML = `<h2>Stage E — Analysis</h2><p class="hint">${S.useSavedResults || signedOff() ? "Loading saved results…" : "Computing…"}</p>`;
   let r;
   try {
-    if (S.useSavedResults && S.results) {
+    if (S.useSavedResults || signedOff()) {
+      if (!S.results) {
+        const saved = await api(`api/analyses/${aid}`);
+        if (S.aid !== aid || S.stage !== "E") return;
+        S.record = saved; S.results = saved.results;
+      }
+      if (!S.results) throw new Error("No saved results are available. Return to dimensions to run the analysis.");
       r = {results: S.results, baseline: S.baseline, overall: S.record.status}; S.useSavedResults = false;
     } else {
       r = await postJSON(`api/analyses/${S.aid}/compute`, { sid_mm: S.sid });
     }
     if (S.aid !== aid || S.stage !== "E") return;
   } catch (e) {
+    if (S.aid !== aid || S.stage !== "E") return;
     c.innerHTML = `<h2>Stage E — Analysis</h2>
-      <p style="color:var(--fail)">${e.message}</p>`;
+      <p style="color:var(--fail)">${html_escape(e.message)}</p>
+      <button class="secondary" id="btn-back-d">Back to dimensions</button>`;
+    $("#btn-back-d").addEventListener("click", () => setStage("D"));
     return;
   }
   S.results = r.results;
-  if (S.record) { S.record.results = r.results; S.record.sid_mm = S.sid; }
+  if (S.record) { S.record.results = r.results; S.record.sid_mm = S.sid; S.record.status = r.overall; }
   S.baseline = r.baseline;
   const res = r.results;
   // Each entry carries what the summary row needs plus the detail behind it,
@@ -2182,7 +2195,10 @@ async function stageE(c) {
     <h3>Detail per pattern</h3>
     <p class="hint">Anything that did not pass is already open.</p>
     ${details}
-    <button class="primary" id="btn-confirm-e">Accept results → save</button>
+    <h3>To Do</h3>
+    <div id="analysis-todo" class="analysis-tasks" data-analysis-tasks="${S.aid}">Loading guidance…</div>
+    <p class="hint">Results are saved automatically.</p>
+    <button class="primary" id="btn-confirm-e">Advanced settings</button>
     <button class="secondary" id="btn-back-d">Back to dimensions</button>`;
 
   drawWedgeChart(res);
@@ -2194,6 +2210,9 @@ async function stageE(c) {
     setStage("F");
   });
   $("#btn-back-d").addEventListener("click", () => setStage("D"));
+  document.dispatchEvent(new CustomEvent("phantomqa:render-tasks", {
+    detail: {host: $("#analysis-todo"), aid: S.aid},
+  }));
 }
 
 /* The reference this phantom's future scans are compared against.
@@ -2265,7 +2284,8 @@ function stageF(c) {
     The decision, the approver's name and any comment appear at the top of the
     printable report.</p>
     <button class="secondary" id="btn-validate-f">Set validation…</button>`;
-  c.innerHTML = `<h2>Stage F — Save &amp; export</h2>
+  c.innerHTML = `<h2>Stage F — Advanced settings</h2>
+    <div class="stage-return"><button class="secondary" id="btn-back-e">Back to analysis results (E)</button></div>
     <p>Analysis <b>${S.aid}</b> stored with full audit trail.</p>
     ${identWarn}
     ${valBlock}
@@ -2289,6 +2309,11 @@ function stageF(c) {
     <button class="secondary" id="btn-verify">Verify source file</button>
     <br>
     <button class="secondary" id="btn-new">New analysis</button>`;
+  $("#btn-back-e").addEventListener("click", () => {
+    S.results = S.results || S.record?.results;
+    S.useSavedResults = true;
+    setStage("E");
+  });
   const bl = $("#btn-baseline");
   $("#saved-revisions").addEventListener("toggle", async event => {
     if (!event.target.open) return;
@@ -2430,7 +2455,10 @@ function showTab(which) {
   if (which === "history") loadHistory();
   if (which === "analyze") resizeCanvas();
 }
-$("#tab-analyze").addEventListener("click", () => showTab("analyze"));
+$("#tab-analyze").addEventListener("click", () => {
+  if (!S.aid) document.dispatchEvent(new CustomEvent("phantomqa:upload", {detail: "analyze"}));
+  else showTab("analyze");
+});
 $("#tab-history").addEventListener("click", () => showTab("history"));
 document.addEventListener("phantomqa:open-analysis", event => {
   if (typeof event.detail !== "string") return;

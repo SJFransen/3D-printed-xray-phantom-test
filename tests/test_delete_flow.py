@@ -290,7 +290,7 @@ def test_a_refused_delete_leaves_the_record_findable(client, mod):
     assert refused.status_code == 401
 
     again = client.post("/api/analyses",
-                        files={"file": ("scan.png", io.BytesIO(payload))})
+                        files={"file": ("scan.png", io.BytesIO(payload))}, data={"site": "Test hospital"})
     assert again.status_code == 409, (
         "the duplicate check must still see the record that was NOT deleted")
     assert [d["id"] for d in again.json()["duplicate_of"]] == [aid]

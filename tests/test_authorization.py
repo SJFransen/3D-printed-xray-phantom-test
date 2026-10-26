@@ -126,6 +126,8 @@ ROUTES = [
     ("GET",  "/upload-form.js",                    "user"),
     ("GET",  "/api/analyses",                      "user"),
     ("POST", "/api/analyses",                      "user"),
+    ("POST", "/api/uploads/preview", "user"),
+    ("GET", "/api/solutions/{asset_path:path}", "user"),
     ("POST", "/api/auto-analyse",                  "user"),
     ("GET",  "/api/auto-analyse/{aid}",            "user"),
     ("GET",  "/auto-analyse.js",                   "user"),
@@ -199,7 +201,7 @@ def test_route_inventory_is_complete(app_mod):
 @pytest.mark.parametrize("method,path,level",
                          [r for r in ROUTES if r[2] != "public"])
 def test_anonymous_is_rejected(client, analysis, method, path, level):
-    url = path.format(aid=analysis, revision=1)
+    url = path.replace("{asset_path:path}", "line-pair/step%201/image.png").format(aid=analysis, revision=1)
     r = client.request(method, url, json={}, headers={"X-CSRF-Token": "x"})
     assert r.status_code in (401, 403), (
         f"{method} {url} returned {r.status_code} to an ANONYMOUS caller")
@@ -213,7 +215,7 @@ def test_anonymous_is_rejected(client, analysis, method, path, level):
                          [r for r in ROUTES if r[2] != "public"])
 def test_anonymous_never_leaks_data(client, analysis, method, path, level):
     """A denied response must not contain any stored content."""
-    url = path.format(aid=analysis, revision=1)
+    url = path.replace("{asset_path:path}", "line-pair/step%201/image.png").format(aid=analysis, revision=1)
     r = client.request(method, url, json={}, headers={"X-CSRF-Token": "x"})
     body = r.text.lower()
     for secret in ("goma", "sha256", "phantom_qa.sqlite3", "traceback"):
@@ -246,7 +248,7 @@ def test_user_is_not_blocked_by_auth(app_mod, analysis, method, path):
     c = TestClient(app_mod.app, raise_server_exceptions=False)
     csrf = _login(c)
     c.headers.update({"X-CSRF-Token": csrf})
-    url = path.format(aid=analysis, revision=1)
+    url = path.replace("{asset_path:path}", "line-pair/step%201/image.png").format(aid=analysis, revision=1)
     r = c.request(method, url, json={})
     assert r.status_code not in (401, 403), (
         f"{method} {url} refused an authenticated user ({r.status_code})")
@@ -260,7 +262,7 @@ def test_user_is_not_blocked_by_auth(app_mod, analysis, method, path):
      {"status": "validated", "validated_by": "Someone"}),
 ])
 def test_admin_routes_reject_a_plain_user(user_client, analysis, path, body):
-    url = path.format(aid=analysis, revision=1)
+    url = path.replace("{asset_path:path}", "line-pair/step%201/image.png").format(aid=analysis, revision=1)
     payload = {k: v.format(aid=analysis) if isinstance(v, str) else v
                for k, v in body.items()}
     for pw in ("", "wrong", USER_PW):
@@ -348,7 +350,7 @@ def test_admin_actions_disabled_without_admin_password(tmp_path, monkeypatch):
 def test_state_changing_requests_need_csrf(app_mod, analysis, method, path):
     c = TestClient(app_mod.app)
     _login(c)                                   # session cookie, no CSRF header
-    url = path.format(aid=analysis, revision=1)
+    url = path.replace("{asset_path:path}", "line-pair/step%201/image.png").format(aid=analysis, revision=1)
     r = c.request(method, url, json={})
     assert r.status_code == 403, (
         f"{method} {url} accepted a request with no CSRF header")
@@ -500,7 +502,7 @@ def test_upload_size_is_capped(tmp_path, monkeypatch):
     csrf = _login(c)
     r = c.post("/api/analyses",
                files={"file": ("big.dcm", io.BytesIO(b"0" * 2_000_000))},
-               headers={"X-CSRF-Token": csrf, "Content-Length": "2000000"})
+               headers={"X-CSRF-Token": csrf, "Content-Length": "2000000"}, data={"site": "Test hospital"})
     assert r.status_code == 413
 
 

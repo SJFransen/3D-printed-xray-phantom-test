@@ -27,20 +27,22 @@ resets both controls to that scan's automatic window.
 
 ### Upload — choose the file and identify the scan
 
-Choose the scan file and fill in the identification, in either order. Nothing is
-uploaded until you press **Upload & analyse**.
+Both workflows use one upload page. Choose Auto Analyze or Analyze step by step,
+then select the scan. The file is sent for an institution preview without creating
+a History record. Check the identification and press **Upload & analyze** to start.
 
 | Field | Purpose |
 |---|---|
-| **Site** | Groups analyses for trending. Required for grouped comparison |
+| **Site / institution** | Required; read from DICOM when available and editable before submission |
 | **Phantom** | Identifies the physical phantom. Required for grouped comparison |
 | Operator | Optional |
 | Notes | Optional |
 
-Previously used values appear as suggestions, and the last values are remembered
-for the rest of the session so a batch of scans need not be retyped. A warning
-appears if both Site and Phantom are empty, because such an analysis will not
-appear in any grouped trend.
+Previously used labels appear as suggestions. Phantom ID and operator are
+remembered during the session. Institution comes from DICOM tag (0008,0080),
+falling back to (0002,0016). If neither is populated, enter the institution
+manually; a remembered institution is never silently assigned to a new file.
+An archive containing different institutions requires a site choice for the batch.
 
 Labels can be changed later at any time — see *Correcting the identification*.
 
@@ -296,9 +298,11 @@ printed objects and points back to step C, and a non-monotonic wedge says a
 step ROI may be sitting on a boundary. Read the reason before repeating the
 exposure.
 
-### F — Save and export
+### F — Advanced settings
 
-The analysis is stored with its full audit trail. From here you can:
+Results and manual adjustments are saved during analysis. **Advanced settings**
+opens this step; **Back to results** returns to E without recomputing. Finalize
+archives the report revision. From here you can:
 
 - mark it as the **reference scan** for its phantom (see below)
 - open the **printable report**, or download **CSV** or **JSON**

@@ -167,7 +167,9 @@ def test_duplicate_aware_tasks(duplicate, expected, absent, passing, pdef):
     assert expected in [t["type"] for t in tasks] and absent not in [t["type"] for t in tasks]
     description = next(t for t in tasks if t["type"] == expected)["description"]
     assert ("Uniformity" in description) is duplicate
-    assert not any(t["related_feature"] or t["steps"] for t in tasks)
+    feature_tasks = [task for task in tasks if task["type"] == "feature_solution"]
+    assert len(feature_tasks) == 1 and feature_tasks[0]["related_feature"] == "uniformity"
+    assert feature_tasks[0]["solutions"]
     assert len({t["id"] for t in tasks}) == len(tasks)
     assert "analysis_attention" not in [t["type"] for t in tasks]
 
@@ -220,6 +222,7 @@ def algorithms(monkeypatch, passing):
 
 
 def upload(client, data=None, **labels):
+    labels.setdefault("site", "Test hospital")
     response = client.post("/api/auto-analyse", files={"file": ("scan.png", data if data is not None else png())}, data=labels)
     assert response.status_code == 200, response.text
     return response.json()["analyses"][0]
@@ -283,7 +286,7 @@ def test_technical_failure_is_saved_with_actual_error(client, mod, monkeypatch):
     rec = mod.store.get(result["id"])
     assert rec["status"] == "error" and rec["stage"] == "F"
     assert rec["results"]["geometry"]["error"] == "RuntimeError: registration diagnostic"
-    assert {t["type"] for t in result["tasks"]} == {"next_scan", "repeat_scan"}
+    assert {t["type"] for t in result["tasks"]} == {"next_scan", "repeat_scan", "feature_solution"}
 
 
 def test_real_pipeline_rejects_blank_scan_as_attention(client, mod):
@@ -330,17 +333,17 @@ def test_incomplete_metric_row_stays_compatible_with_history(client, mod, algori
 
 
 def test_invalid_upload_leaves_history_empty(client, mod):
-    response = client.post("/api/auto-analyse", files={"file": ("bad.dcm", b"not an image")})
+    response = client.post("/api/auto-analyse", files={"file": ("bad.dcm", b"not an image")}, data={"site": "Test hospital"})
     assert response.status_code == 400 and not mod.store.list_all()
 
 
 def test_duplicate_guard_for_analyze_is_unchanged(client, mod, algorithms):
     data = png()
     first = upload(client, data)
-    duplicate = client.post("/api/analyses", files={"file": ("scan.png", data)})
+    duplicate = client.post("/api/analyses", files={"file": ("scan.png", data)}, data={"site": "Test hospital"})
     assert duplicate.status_code == 409
     assert duplicate.json()["duplicate_of"][0]["id"] == first["id"]
-    override = client.post("/api/analyses", files={"file": ("scan.png", data)}, data={"allow_duplicate": "true"})
+    override = client.post("/api/analyses", files={"file": ("scan.png", data)}, data={"site": "Test hospital", "allow_duplicate": "true"})
     assert override.status_code == 200 and len(mod.store.list_all()) == 2
 
 
@@ -351,7 +354,7 @@ def test_identical_archive_members_are_saved_once(client, mod, algorithms):
     # here to exercise persistence independently of the archive format.
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(mod.ingest, "load_any_bytes", lambda *_: [scan, scan])
-        response = client.post("/api/auto-analyse", files={"file": ("export.zip", b"container")})
+        response = client.post("/api/auto-analyse", files={"file": ("export.zip", b"container")}, data={"site": "Test hospital"})
     assert response.status_code == 200
     assert len(response.json()["analyses"]) == 1 and len(mod.store.list_all()) == 1
     assert not response.json()["analyses"][0]["duplicate"]
@@ -386,7 +389,7 @@ def test_auto_page_is_first_and_viewer_has_no_edit_handlers(client):
     assert "pointerdown" not in source and "mousedown" not in source and "/roi" not in source
     assert "renderTasks" in source and "textContent" in source
     assert ">Auto Analyze</button>" in page
-    assert "auto-technical" not in page and "Technical review details" not in page
+    assert 'id="auto-technical"' not in page and 'id="user-view"' not in page
 
 
 def test_nested_linepair_acceptance_matches_detector(passing, pdef):

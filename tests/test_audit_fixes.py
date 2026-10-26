@@ -197,7 +197,7 @@ def test_archive_with_duplicate_members_creates_one_analysis(client, mod, monkey
         stream.writestr("first.dcm", data)
         stream.writestr("second.dcm", data)
     monkeypatch.setattr(pipeline, "run_stage_a", lambda *a, **kw: registration(make_ctx()))
-    response = client.post("/api/analyses", files={"file": ("scans.zip", archive.getvalue())})
+    response = client.post("/api/analyses", files={"file": ("scans.zip", archive.getvalue())}, data={"site": "Test hospital"})
     assert response.status_code == 200, response.text
     assert len(response.json()["analyses"]) == 1
     assert len(mod.store.find_by_sha256(hashlib.sha256(data).hexdigest())) == 1
@@ -209,7 +209,7 @@ def test_simultaneous_identical_uploads_need_duplicate_approval(client, mod, mon
     gate = threading.Barrier(4)
     def upload(_):
         gate.wait(timeout=5)
-        return client.post("/api/analyses", files={"file": ("scan.dcm", data)}).status_code
+        return client.post("/api/analyses", files={"file": ("scan.dcm", data)}, data={"site": "Test hospital"}).status_code
     with ThreadPoolExecutor(max_workers=4) as pool:
         statuses = list(pool.map(upload, range(4)))
     assert sorted(statuses) == [200, 409, 409, 409]

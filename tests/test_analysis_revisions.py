@@ -102,6 +102,7 @@ def test_field_corrections_follow_every_side_and_orientation(client, alignment_c
 
 def test_duplicate_can_supply_a_missing_site_without_reanalysing(client, mod, algorithms):
     first = upload(client)
+    mod.store.update(first["id"], site="")  # a legacy record from before required identity
     second = upload(client, site=" Goma ")
     assert first["id"] == second["id"] and second["site"] == "Goma"
     assert algorithms == ["register", "propose", "compute"]
@@ -121,7 +122,7 @@ def test_default_saved_layout_matches_analyze(client, mod, algorithms, passing, 
     layout["rois"][square["roi"]["id"]]["center_mm"] = [3., 4.]
     mod.store.save_phantom_profile("P1", layout, pdef_version=pdef.version, algo_version="test", source_analysis_id="source", updated_by="Technician")
     automatic = upload(client, png(1), phantom="P1")
-    manual = client.post("/api/analyses", files={"file": ("new.png", png(2))}, data={"phantom": "P1"}).json()["analyses"][0]
+    manual = client.post("/api/analyses", files={"file": ("new.png", png(2))}, data={"site": "Test hospital", "phantom": "P1"}).json()["analyses"][0]
     proposed = client.post(f"/api/analyses/{manual['id']}/propose", json={})
     assert proposed.status_code == 200, proposed.text
     assert proposed.json()["profile_applied"]

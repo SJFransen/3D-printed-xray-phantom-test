@@ -1,0 +1,2 @@
+Inspect per-group pitch deviation and profile peak detection. Check each measuring box and its profile against the printed pattern. Correct individual boxes or re-detect positions in Analyze before interpreting an apparent resolution change.
+Compare with prior scans of the same phantom and acquisition protocol. Escalate unresolved issues to the medical physicist.

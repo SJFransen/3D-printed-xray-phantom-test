@@ -417,3 +417,17 @@ Six scans in three orientations (0°, 90°, 180°):
   matched-filter shift, not detected per circle: the individual discs are too
   faint to localise reliably in a single scan. Manual adjustment in step C is
   the fallback.
+
+## Line-pair positioning restoration (1.2.1)
+
+The 1.2.0 contour experiment is withdrawn. Proposals again use the previous
+periodicity-based strip detection, local directional centring and final
+middle-line alignment. Individual measuring boxes remain 12.6 mm square, with
+the established orientation and independent manual adjustments. No enclosing
+bright contour is required to accept a line-pair feature.
+
+Saved profiles from the withdrawn rigid-contour method are excluded from fresh
+line-pair proposals. Existing results and audit history are preserved. To correct
+a scan analysed by that version, return to Stage A in Analyze and confirm the
+registration again to generate fresh positions, then run the analysis again.
+This creates an audited new revision.

@@ -156,6 +156,10 @@ def extract_layout(geometry: dict, *, pdef_name: str = "",
     for test, node in (geometry or {}).items():
         if not isinstance(node, dict) or node.get("_error"):
             continue
+        if test == "linepairs" and node.get("rigid_layout"):
+            # Do not turn the withdrawn contour experiment into a reusable
+            # independent-box profile. A fresh proposal supplies the detector.
+            continue
         if test == "geometry":
             # Rulers, corner marks and field edges describe the exposure and
             # the collimator, not the phantom's assembly.
@@ -251,7 +255,13 @@ def apply_layout(ctx, geometry: dict, layout: dict) -> tuple[dict, dict]:
     millimetre positions and re-derives every pixel field from THIS scan's
     transform, which is the whole rotation-invariance mechanism."""
     applied, skipped = [], []
+    # Keep profiles from the withdrawn contour method out of fresh detections.
+    rigid = bool((geometry.get("linepairs") or {}).get("rigid_layout"))
+    profile_rigid = bool((layout.get("scalars", {}).get("linepairs") or {}).get("rigid_layout"))
     for roi_id, entry in (layout.get("rois") or {}).items():
+        if rigid != profile_rigid and roi_id.startswith("linepairs/"):
+            skipped.append(roi_id)
+            continue
         node = walk_find(geometry, roi_id)
         if node is None or node.get("type") != entry.get("type"):
             # The phantom definition may have changed the object list since.
@@ -269,6 +279,8 @@ def apply_layout(ctx, geometry: dict, layout: dict) -> tuple[dict, dict]:
         applied.append(roi_id)
 
     for test, keep in (layout.get("scalars") or {}).items():
+        if test == "linepairs" and rigid != profile_rigid:
+            continue
         node = (geometry or {}).get(test)
         if not isinstance(node, dict) or node.get("_error"):
             continue

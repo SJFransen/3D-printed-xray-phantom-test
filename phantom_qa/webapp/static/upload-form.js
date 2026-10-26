@@ -1,7 +1,7 @@
 /* Shared upload UI: both workflows submit the same file and identification fields. */
 (() => {
   "use strict";
-  function mount(host, {prefix = "", request, onUpload, onFile = () => {}, compact = false}) {
+  function mount(host, {prefix = "", request, onUpload, onFile = () => {}}) {
     host.replaceChildren(document.getElementById("scan-upload-template").content.cloneNode(true));
     const ids = {drop: "drop", file: "file-input", chosen: "file-chosen", upload: "btn-upload",
       clear: "btn-clear-file", warning: "up-warn", site: "up-site", phantom: "up-phantom",
@@ -18,26 +18,38 @@
     for (const key of ["site", "phantom", "operator"]) {
       nodes[key].value = sessionStorage.getItem("lbl_" + key) || "";
     }
-    if (compact) {
-      for (const node of host.children) {
-        if (node !== nodes.drop && node !== nodes.file) node.classList.add("hidden");
-      }
-      nodes.drop.textContent = "Drop DICOM file here";
-      nodes.drop.setAttribute("aria-label", "Drop DICOM file here or choose a file");
-    }
-    let file = null, busy = false;
+    let file = null, busy = false, previewing = false, version = 0;
+    nodes.site.required = true;
     const labels = () => Object.fromEntries(["site", "phantom", "operator", "notes"]
       .map(key => [key, nodes[key].value.trim()]));
     function refresh() {
       nodes.chosen.classList.toggle("hidden", !file);
       nodes.chosen.textContent = file ? `${file.name} · ${(file.size / 1048576).toFixed(1)} MB` : "";
-      nodes.upload.disabled = !file || busy;
-      nodes.warning.textContent = !labels().site && !labels().phantom
-        ? "Without a site or phantom, this scan will not appear in grouped trends." : "";
+      nodes.upload.disabled = !file || busy || previewing || !labels().site;
     }
-    function choose(next) {
+    async function choose(next) {
       file = next; onFile(file); refresh();
-      if (compact && file && !busy) onUpload(file);
+      const current = ++version;
+      nodes.warning.textContent = "";
+      if (!file) { previewing = false; refresh(); return; }
+      previewing = true; nodes.site.value = "";
+      nodes.warning.textContent = "Reading institution from the scan…"; refresh();
+      const data = new FormData(); data.append("file", file);
+      try {
+        const result = await request("api/uploads/preview", {method: "POST", body: data});
+        if (current !== version) return;
+        const names = [...new Set(result.scans.map(scan => scan.institution))];
+        nodes.site.value = names.length === 1 ? names[0] : "";
+        nodes.warning.textContent = names.length > 1
+          ? "This archive contains different or missing institutions. Enter the site to use for all scans."
+          : nodes.site.value ? "Institution read from DICOM. Check it before uploading."
+          : "No institution in the DICOM headers. Enter the site / institution to continue.";
+      } catch (error) {
+        if (current !== version) return;
+        nodes.warning.textContent = error.message + " Enter the institution before retrying.";
+      } finally {
+        if (current === version) { previewing = false; refresh(); }
+      }
     }
     nodes.file.addEventListener("change", () => choose(nodes.file.files[0] || null));
     nodes.drop.addEventListener("click", () => { if (!busy) nodes.file.click(); });
@@ -54,7 +66,9 @@
     });
     nodes.clear.addEventListener("click", () => { nodes.file.value = ""; choose(null); });
     for (const key of ["site", "phantom"]) nodes[key].addEventListener("input", refresh);
-    nodes.upload.addEventListener("click", () => { if (file && !busy) onUpload(file); });
+    nodes.upload.addEventListener("click", () => {
+      if (file && !busy && !previewing && nodes.site.reportValidity()) onUpload(file);
+    });
     async function loadLabels() {
       try {
         const data = await request("api/labels");
@@ -69,9 +83,6 @@
     return {nodes, labels, refresh, loadLabels,
       data() {
         const data = new FormData(); data.append("file", file);
-        if (compact) {
-          for (const key of ["site", "phantom", "operator"]) nodes[key].value = sessionStorage.getItem("lbl_" + key) || "";
-        }
         for (const [key, value] of Object.entries(labels())) data.append(key, value);
         for (const key of ["site", "phantom", "operator"]) sessionStorage.setItem("lbl_" + key, labels()[key]);
         return data;

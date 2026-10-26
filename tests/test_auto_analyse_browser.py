@@ -10,6 +10,7 @@ import os
 import socket
 import threading
 import time
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -83,10 +84,129 @@ def browser_page(mod, algorithms, legacy_upload_cache):
         sock.close()
 
 
+def choose_scan(page, file):
+    with page.expect_response("**/api/uploads/preview"):
+        field = page.locator("#auto-file")
+        field.set_input_files(file)
+    for key in ("site", "phantom", "operator"):
+        value = page.evaluate("key => sessionStorage.getItem('lbl_' + key)", key) or ("Test hospital" if key == "site" else "")
+        page.locator("#auto-" + key).fill(value)
+    page.locator("#auto-submit").click()
+
+
 def send_scan(page, seed=0):
-    page.locator("#auto-file").set_input_files({"name": "scan.png", "mimeType": "image/png", "buffer": png(seed)})
+    choose_scan(page, {"name": "scan.png", "mimeType": "image/png", "buffer": png(seed)})
     page.locator("#auto-result").wait_for(state="visible")
     page.locator("#auto-viewer").wait_for(state="visible")
+
+
+def test_browser_dicom_identity_is_visible_and_plain_image_requires_entry(browser_page, mod):
+    from test_solutions_and_identity import dicom_bytes
+    page, errors = browser_page
+    page.evaluate("sessionStorage.setItem('lbl_site', 'Old hospital')")
+    with page.expect_response("**/api/uploads/preview"):
+        page.locator("#auto-file").set_input_files({"name": "scan.dcm", "mimeType": "application/dicom", "buffer": dicom_bytes()})
+    page.wait_for_function("() => document.getElementById('auto-site').value === 'Example clinic'")
+    assert not mod.store.list_all()
+    page.locator("#auto-site").fill("Corrected clinic")
+    page.locator("#auto-phantom").fill("P1")
+    page.locator("#auto-operator").fill("Operator A")
+    page.locator("#auto-submit").click()
+    page.locator("#auto-result").wait_for(state="visible")
+    saved = mod.store.list_all()[0]
+    assert (saved["site"], saved["phantom"], saved["operator"]) == ("Corrected clinic", "P1", "Operator A")
+    page.locator("#auto-new-scan").click()
+    with page.expect_response("**/api/uploads/preview"):
+        page.locator("#auto-file").set_input_files({"name": "new.png", "mimeType": "image/png", "buffer": png(2)})
+    page.wait_for_function("() => document.getElementById('auto-label-warning').textContent.includes('No institution')")
+    assert page.locator("#auto-site").input_value() == ""
+    assert page.locator("#auto-submit").is_disabled()
+    assert len(mod.store.list_all()) == 1
+    assert not errors
+
+
+def test_browser_operator_solutions_and_saved_result_return(browser_page, passing, tmp_path, monkeypatch):
+    from phantom_qa import solutions
+    page, errors = browser_page
+    page.evaluate("sessionStorage.setItem('qa_view', 'physicist')")
+    passing[1]["uniformity"]["status"] = "fail"
+    monkeypatch.setattr(solutions, "ROOT", tmp_path / "solutions")
+    for number in (2, 10):
+        step = solutions.ROOT / "uniformity" / f"step {number}"
+        step.mkdir(parents=True)
+        (step / "explanation.txt").write_text("Before [image 01] after [video] end", encoding="utf-8")
+        (step / "01.png").write_bytes(png())
+        (step / "demo.mp4").write_bytes(b"test video")
+        (step / "technician.txt").write_text("Technician instruction", encoding="utf-8")
+        (step / "physicist.txt").write_text("Physicist instruction", encoding="utf-8")
+    writes = []
+    page.on("request", lambda request: writes.append(request.url) if request.url.endswith("/compute") else None)
+    send_scan(page)
+    steps = page.locator(".solution-step")
+    assert steps.count() == 2
+    assert steps.locator("summary").all_text_contents() == ["Step 2", "Step 10"]
+    assert not steps.first.evaluate("node => node.open")
+    steps.first.locator("summary").click()
+    assert steps.first.locator(":scope > p, :scope > img, :scope > video").evaluate_all("nodes => nodes.map(n => n.tagName)") == ["P", "IMG", "P", "VIDEO", "P"]
+    assert steps.first.locator("video").get_attribute("preload") == "none"
+    assert "Technician instruction" not in steps.first.inner_text()
+    previews = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
+    previews.mkdir(exist_ok=True)
+    page.screenshot(path=str(previews / "implementation-operator.png"), full_page=True)
+    assert page.locator("#user-view").count() == 0
+    assert page.locator("#auto-technical").count() == 0
+    assert "Physicist instruction" not in steps.first.inner_text()
+    page.set_viewport_size({"width": 360, "height": 900})
+    page.screenshot(path=str(previews / "implementation-mobile.png"), full_page=True)
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    page.set_viewport_size({"width": 1280, "height": 1000})
+    page.locator("#auto-open-analyze").click()
+    page.locator("#btn-confirm-e").wait_for(state="visible")
+    page.locator("#analysis-todo .solution-step").first.wait_for(state="visible")
+    assert page.locator("#analysis-todo .solution-step").count() == 2
+    page.locator("#analysis-todo .solution-step").first.locator("summary").click()
+    assert "Technician instruction" in page.locator("#analysis-todo").inner_text()
+    assert page.locator("#btn-confirm-e").inner_text() == "Advanced settings"
+    page.locator("#btn-confirm-e").click()
+    page.locator("#btn-back-e").click()
+    page.locator("#btn-confirm-e").wait_for(state="visible")
+    assert not writes, "Viewing stored results must not recompute them"
+    assert not errors
+
+
+@pytest.mark.parametrize("signed_off,missing_memory", [(False, False), (True, True)])
+def test_browser_history_settings_returns_to_saved_results(browser_page, mod, signed_off, missing_memory):
+    page, errors = browser_page
+    send_scan(page)
+    record = mod.store.list_all()[0]
+    aid = record["id"]
+    if signed_off:
+        mod.store.update(aid, validation_status="validated", validated_by="Reviewer")
+    before = mod.store.get(aid)
+    writes = []
+    page.on("request", lambda request: writes.append(request.url) if request.method == "POST" else None)
+    page.locator("#tab-history").click()
+    page.locator(f'#history-table a.open[data-id="{aid}"]').click()
+    page.locator("#btn-back-e").wait_for(state="visible")
+    page.set_viewport_size({"width": 1100, "height": 650})
+    page.locator("#stage-content").evaluate("node => { node.scrollTop = node.scrollHeight; }")
+    button = page.locator("#btn-back-e")
+    bounds = button.bounding_box()
+    assert bounds and 0 <= bounds["y"] < 650
+    if not signed_off:
+        preview = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
+        preview.mkdir(exist_ok=True)
+        page.screenshot(path=str(preview / "settings-return-restored.png"), full_page=True)
+    if missing_memory:
+        page.evaluate("() => { S.results = null; S.record.results = null; }")
+    button.click()
+    page.locator("#btn-confirm-e").wait_for(state="visible")
+    assert "Stage E" in page.locator("#stage-content h2").inner_text()
+    assert not writes, "Returning to saved results must not compute, finalize or change sign-off"
+    after = mod.store.get(aid)
+    assert after["results"] == before["results"]
+    assert after["validation_status"] == before["validation_status"]
+    assert not errors
 
 
 def test_browser_upload_forms_survive_cached_controllers_from_previous_release(browser_page, legacy_upload_cache):
@@ -101,20 +221,16 @@ def test_browser_upload_forms_survive_cached_controllers_from_previous_release(b
     legacy_upload_cache["priming"] = False
     page.goto(origin + "/")
     page.locator("#auto-drop").wait_for(state="visible", timeout=3000)
-    assert page.locator("#auto-site").is_hidden()
-    assert page.locator("#auto-drop").inner_text() == "Drop DICOM file here"
+    assert page.locator("#auto-site").is_visible()
     with page.expect_file_chooser() as chosen:
         page.locator("#auto-drop").click()
-    chosen.value.set_files({"name": "scan.png", "mimeType": "image/png", "buffer": png()})
-    page.locator("#auto-viewer").wait_for(state="visible")
-    page.locator("#tab-analyze").click()
-    page.locator("#drop").wait_for(state="visible")
-    with page.expect_file_chooser() as chosen:
-        page.locator("#drop").click()
-    chosen.value.set_files({"name": "scan.png", "mimeType": "image/png", "buffer": png(1)})
-    assert page.locator("#btn-upload").is_enabled()
-    page.locator("#btn-upload").click()
+    with page.expect_response("**/api/uploads/preview"):
+        chosen.value.set_files({"name": "scan.png", "mimeType": "image/png", "buffer": png()})
+    page.locator("#auto-site").fill("Test hospital")
+    page.locator("#upload-workflow").select_option("analyze")
+    page.locator("#auto-submit").click()
     page.locator('#stage-nav li.active[data-stage="A"]').wait_for(state="visible")
+
     assert not errors
 
 
@@ -124,8 +240,8 @@ def test_browser_upload_pass_viewer_tasks_and_navigation(browser_page):
     assert page.locator("#view-auto-analyse").is_visible()
     assert not page.locator("#view-analyze").is_visible()
     assert page.locator("#auto-drop").is_visible()
-    assert page.locator("#auto-upload-form .auto-labels input:visible").count() == 0
-    assert page.locator("#auto-upload-form button:visible").count() == 0
+    assert page.locator("#auto-upload-form .auto-labels input:visible").count() == 4
+    assert page.locator("#auto-upload-form button:visible").count() == 2
     send_scan(page)
     assert not page.locator("#auto-upload-form").is_visible()
     assert page.locator("#auto-results-page").is_visible()
@@ -137,7 +253,8 @@ def test_browser_upload_pass_viewer_tasks_and_navigation(browser_page):
     assert page.locator("#auto-overlays polygon").count() > 0
     assert page.locator("#auto-overlays [stroke]").evaluate_all("nodes => nodes.every(n => n.getAttribute('stroke') === '#65df8b')")
     assert page.locator("#auto-overlays").evaluate("node => getComputedStyle(node).pointerEvents") == "none"
-    page.locator("#tab-analyze").click()
+    page.locator("#auto-open-analyze").click()
+    page.locator("#view-analyze").wait_for(state="visible")
     assert page.locator("#view-analyze").is_visible() and not page.locator("#view-auto-analyse").is_visible()
     page.locator("#tab-history").click()
     page.locator("#history-table tbody tr").first.wait_for(state="visible")
@@ -170,7 +287,7 @@ def test_browser_linepair_geometry_does_not_shift_on_analyze_handoff(browser_pag
         group["profile_seg"] = segment(ctx, [center[0] - 8., -8.], [center[0] + 8., 8.],
                                        f"linepairs/{group['id']}/profile")
     with page.expect_response("**/api/auto-analyse") as uploaded:
-        page.locator("#auto-file").set_input_files({"name": "odd-detector.png", "mimeType": "image/png", "buffer": encoded.getvalue()})
+        choose_scan(page, {"name": "odd-detector.png", "mimeType": "image/png", "buffer": encoded.getvalue()})
     page.locator("#auto-viewer").wait_for(state="visible")
     record = uploaded.value.json()["analyses"][0]
     geometry = record["geometry"]
@@ -237,7 +354,8 @@ def test_browser_incomplete_measurement_keeps_orange_rois_and_opens_same_error_i
     send_scan(page)
     assert page.locator("#auto-feature-status li.auto-attention").inner_text().startswith("Uniformity")
     assert page.locator("#auto-overlays [stroke='#ffb45c']").count() == 5
-    assert page.locator("#auto-feature-status small, #auto-technical").count() == 0
+    assert page.locator("#auto-feature-status small").count() == 0
+    assert page.locator("#auto-technical").count() == 0
     page.locator("#auto-open-analyze").click()
     page.locator("#view-analyze").wait_for(state="visible")
     page.locator("#stage-content").filter(has_text="Required measurement is missing or invalid").wait_for(state="visible")
@@ -262,7 +380,7 @@ def test_browser_orange_duplicate_and_failed_request(browser_page, passing):
     page.route("**/api/auto-analyse", lambda route: route.fulfill(status=500,
                content_type="application/json", body=json.dumps({"detail": "Test processing error"})))
     page.locator("#auto-new-scan").click()
-    page.locator("#auto-file").set_input_files({"name": "scan.png", "mimeType": "image/png", "buffer": png()})
+    choose_scan(page, {"name": "scan.png", "mimeType": "image/png", "buffer": png()})
     page.locator("#auto-error").wait_for(state="visible")
     assert "The upload could not be completed" in page.locator("#auto-error").inner_text()
     assert "Test processing error" not in page.locator("#auto-error").inner_text()
@@ -339,7 +457,7 @@ def test_browser_viewer_fits_window_levels_zooms_and_pans_without_editing(browse
     page.wait_for_function("() => document.getElementById('auto-viewer-layer').getBoundingClientRect().bottom <= document.getElementById('auto-viewer').getBoundingClientRect().bottom")
     check_fit()
     # Hidden-tab resizes must not lose the fitted image when returning.
-    page.locator("#tab-analyze").click()
+    page.locator("#tab-history").click()
     page.set_viewport_size({"width": 1280, "height": 800})
     page.locator("#tab-auto-analyse").click()
     page.wait_for_function("() => document.getElementById('auto-viewer-layer').getBoundingClientRect().bottom <= document.getElementById('auto-viewer').getBoundingClientRect().bottom")

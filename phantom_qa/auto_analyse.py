@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
 from . import pipeline
+from . import solutions
 
 from .analysis.assessment import LABELS, SIDES, assess_features, collect_overlays
 
@@ -28,6 +29,7 @@ class Task:
     due_date: str | None = None
     steps: list[str] = field(default_factory=list)
     image_references: list[dict] = field(default_factory=list)
+    solutions: list[dict] = field(default_factory=list)
 
 
 def next_scan_date(uploaded_at):
@@ -79,6 +81,13 @@ def generate_tasks(aid, uploaded_at, features, duplicate):
         else:
             tasks.append(Task(f"{aid}:repeat_scan", "repeat_scan", "Repeat the phantom scan once",
                               "Repeat the phantom scan once and upload the new scan.", priority="high"))
+    for feature in affected:
+        for key in solutions.feature_keys(feature):
+            steps = solutions.load_steps(key)
+            tasks.append(Task(f"{aid}:solution:{key}", "feature_solution",
+                              "Check " + solutions.FEATURES[key].replace("-", " "),
+                              "Check " + solutions.FEATURES[key].replace("-", " ") + ".",
+                              priority="high", related_feature=feature["id"], solutions=steps))
     return [asdict(t) for t in tasks]
 
 

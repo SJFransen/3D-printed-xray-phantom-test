@@ -317,6 +317,6 @@ def test_a_zip_upload_stores_the_member_the_hash_describes(client, mod):
 
     # the same scan arriving OUTSIDE the container is the same scan
     again = client.post("/api/analyses",
-                        files={"file": ("scan.dcm", io.BytesIO(member))})
+                        files={"file": ("scan.dcm", io.BytesIO(member))}, data={"site": "Test hospital"})
     assert again.status_code == 409
     assert again.json()["duplicate_of"][0]["id"] == a

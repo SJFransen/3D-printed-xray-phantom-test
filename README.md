@@ -28,6 +28,10 @@ acted on rather than merely recorded.
 
 ## Documentation
 
+Uploads share one identity page with DICOM institution defaults. Auto Analyze
+provides the operator workflow; Analyze provides detailed review and correction.
+Local feature guidance and media live in [solutions/README.md](solutions/README.md).
+
 | Document | Contents |
 |---|---|
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Running an analysis, validation, comparing scans, exports |

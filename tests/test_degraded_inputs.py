@@ -120,7 +120,7 @@ def test_a_truncated_dicom_is_rejected_cleanly(client):
     for fraction in (3, 10, 100):
         part = whole[: len(whole) // fraction]
         r = client.post("/api/analyses",
-                        files={"file": ("scan.dcm", io.BytesIO(part))})
+                        files={"file": ("scan.dcm", io.BytesIO(part))}, data={"site": "Test hospital"})
         assert r.status_code == 400, (
             f"truncated to 1/{fraction}: {r.status_code}")
 
@@ -133,7 +133,7 @@ def test_an_upload_larger_than_the_cap_is_refused_by_measurement(client, mod):
     try:
         blob = os.urandom(2 * 1024 * 1024)     # incompressible 2 MB
         r = client.post("/api/analyses",
-                        files={"file": ("big.bin", io.BytesIO(blob))})
+                        files={"file": ("big.bin", io.BytesIO(blob))}, data={"site": "Test hospital"})
         assert r.status_code == 413, r.text
         assert "1 MB" in r.json()["detail"]
         assert mod.store.list_all() == []
@@ -146,10 +146,10 @@ def test_a_retry_of_a_finished_upload_is_the_duplicate_answer(client):
     attempt is the 409 duplicate conversation, not a second record."""
     payload = _png(9)
     first = client.post("/api/analyses",
-                        files={"file": ("scan.png", io.BytesIO(payload))})
+                        files={"file": ("scan.png", io.BytesIO(payload))}, data={"site": "Test hospital"})
     assert first.status_code == 200
     again = client.post("/api/analyses",
-                        files={"file": ("scan.png", io.BytesIO(payload))})
+                        files={"file": ("scan.png", io.BytesIO(payload))}, data={"site": "Test hospital"})
     assert again.status_code == 409
     assert again.json()["duplicate_of"][0]["id"] == \
         first.json()["analyses"][0]["id"]

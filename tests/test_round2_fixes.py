@@ -85,7 +85,7 @@ def test_same_file_twice_is_one_history_row(client):
     aid = first.json()["analyses"][0]["id"]
 
     again = client.post("/api/analyses",
-                        files={"file": ("scan.dcm", io.BytesIO(data))})
+                        files={"file": ("scan.dcm", io.BytesIO(data))}, data={"site": "Test hospital"})
     assert again.status_code == 409
     assert [d["id"] for d in again.json()["duplicate_of"]] == [aid]
     assert len(client.get("/api/analyses").json()["analyses"]) == 1
@@ -93,7 +93,7 @@ def test_same_file_twice_is_one_history_row(client):
     # ...unless the user deliberately confirms it
     forced = client.post("/api/analyses",
                          files={"file": ("scan.dcm", io.BytesIO(data))},
-                         data={"allow_duplicate": "true"})
+                         data={"site": "Test hospital", "allow_duplicate": "true"})
     assert forced.status_code == 200
     assert len(client.get("/api/analyses").json()["analyses"]) == 2
 
@@ -103,13 +103,13 @@ def test_duplicate_check_ignores_deleted_records(client):
     data = open(SAMPLES[0], "rb").read()
     aid = client.post("/api/analyses",
                       files={"file": ("s.dcm", io.BytesIO(data))}
-                      ).json()["analyses"][0]["id"]
+                      , data={"site": "Test hospital"}).json()["analyses"][0]["id"]
     deleted = client.post(f"/api/analyses/{aid}/delete",
                           json={"admin_password": ADMIN_PW,
                                 "reason": "re-upload regression check"})
     assert deleted.status_code == 200, deleted.text
     again = client.post("/api/analyses",
-                        files={"file": ("s.dcm", io.BytesIO(data))})
+                        files={"file": ("s.dcm", io.BytesIO(data))}, data={"site": "Test hospital"})
     assert again.status_code == 200, "re-upload after deletion must be allowed"
 
 

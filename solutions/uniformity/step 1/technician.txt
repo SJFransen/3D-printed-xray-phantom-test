@@ -1,0 +1,2 @@
+Review the SNR of each measuring square and its percentage deviation from the average. Check ROI placement and whether a local artifact or an acquisition change explains the affected square.
+Compare with prior scans of the same phantom and acquisition protocol. Escalate unresolved issues to the medical physicist.

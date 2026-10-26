@@ -1,0 +1,2 @@
+Review ruler reliability, measured pitch and dimension deviations. Check registration and scale evidence before treating a dimension warning as a physical change.
+Compare with prior scans of the same phantom and acquisition protocol. Escalate unresolved issues to the medical physicist.

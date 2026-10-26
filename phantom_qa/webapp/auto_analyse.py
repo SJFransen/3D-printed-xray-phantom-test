@@ -12,6 +12,7 @@ def create_router(backend):
     router = APIRouter(prefix="/api/auto-analyse", tags=["auto-analyse"])
 
     def process(scans, data, labels, request):
+        labels = backend._upload_labels(scans, labels)
         analyses, seen = [], {}
         for scan in scans:
             # Shared persistence rechecks the hash atomically BEFORE inserting.

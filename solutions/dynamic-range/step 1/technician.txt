@@ -1,0 +1,2 @@
+Review the individual wedge steps, saturation flags and response ordering. Verify step placement and comparable acquisition conditions before interpreting a persistent change.
+Compare with prior scans of the same phantom and acquisition protocol. Escalate unresolved issues to the medical physicist.

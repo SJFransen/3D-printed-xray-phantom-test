@@ -1,0 +1,3 @@
+Line-pair patterns
+
+Check that each measuring box lies on its printed line pattern. If a box is misplaced, ask the technician to review its position in Analyze before interpreting the result.

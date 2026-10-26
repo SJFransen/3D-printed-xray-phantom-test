@@ -1,0 +1,4 @@
+Uniformity
+
+Check that each measuring square is inside the intended uniform area and does not overlap a border or another feature.
+If the position looks wrong, ask the technician to review it in Analyze before interpreting the result.

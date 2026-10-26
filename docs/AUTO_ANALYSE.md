@@ -1,13 +1,16 @@
 # Auto Analyze
 
-Auto Analyze is the first tab. Its upload screen contains one control:
-**Drop DICOM file here**. Drop a scan or activate the area with the mouse,
-Enter or Space to choose a file; analysis starts immediately. The shared upload
-controller uses the remembered site, phantom and operator from the current
-browser session. Identification can be edited in Analyze; no new identity is
-inferred from the file name.
-The page switches to processing and then a simplified results screen with a
-read-only phantom viewer and To Do panel. **New scan** returns to upload.
+Auto Analyze is the first tab. Both workflows use this single upload page.
+Choose a file, check site / institution, phantom ID and operator, then submit.
+The institution comes from DICOM InstitutionName (0008,0080), falling back to
+SourceApplicationEntityTitle (0002,0016) in file metadata. Missing values require
+manual site entry. Previewing a file creates no History record. Mixed-institution
+archives require an explicit site on the page; the APIs also support per-member
+DICOM defaults when no override is supplied. Both APIs reject an archive with
+missing institutions before inserting any members.
+Select Auto Analyze for immediate processing or Analyze step by step for the
+wizard. Auto Analyze always shows operator outcomes; Analyze provides technical detail.
+See `USERS.md` and `../solutions/README.md`.
 
 The app page serves scripts and styles with content fingerprints in their URLs.
 HTML is not cached; scripts/styles revalidate with the server. This prevents
@@ -29,16 +32,16 @@ Existing proposed ROIs remain visible in orange when detection or measurement
 is incomplete, including nominal fallback proposals. Invalid coordinates cannot
 be plotted, and no new ROI is invented when registration/proposal fails entirely.
 
-To Do contains only the next scan deadline and, when needed, one short instruction:
+To Do contains the next scan deadline and, when needed, a repeat/escalation instruction:
 
 - New orange image: “Repeat the phantom scan once and upload the new scan.”
 - Identical previously recorded orange image: “Contact the MSF technician about
   X-ray field alignment.” The affected tests are named together in one sentence.
 
-There are no feature-specific task summaries, troubleshooting steps or technical
-tasks. Upload-date warnings remain explicit. The next deadline is the stored
-server upload date plus one calendar month, clamped at month end; DICOM acquisition
-dates are not used. Different file hashes are evaluated independently.
+Affected features also receive local solution steps, rendered in numeric order
+with inline images and videos. Multiple steps start collapsed. Technical errors
+and QA deviations retain distinct explanations. The next deadline remains one
+calendar month after the saved upload date, clamped at month end.
 
 **Open in Analyze** opens the same saved History record and displays its existing
 results without recomputing on entry. Site, phantom, operator and notes come from
@@ -206,7 +209,9 @@ can prevent the preview from loading; the status borders and To Do remain availa
 
 1. Remove the optional `create_router` import and `app.include_router(...)` near
    the end of `webapp/main.py`; remove its `sys` import if unused.
-2. Remove the Auto Analyze tab, `view-auto-analyse` markup and optional asset
+2. Remove the manual results To Do block (`analysis-todo`) and its
+   `phantomqa:render-tasks` dispatch from `app.js` if also removing the task adapter.
+   Remove the Auto Analyze tab, `view-auto-analyse` markup and optional asset
    includes from `static/index.html`. Keep `scan-upload-template`. Restore
    Analyze's active tab and visible page.
 3. Delete `phantom_qa/auto_analyse.py`, `webapp/auto_analyse.py`, both optional
@@ -292,3 +297,33 @@ Version 1.1.5 audit fixes and compact Auto Analyze validation:
 - Desktop, 650-pixel and 360-pixel layouts were inspected. Feature results are
   above the image, window controls below it, and no extra upload options appear.
   Validation used disposable databases; existing saved analyses were unchanged.
+
+## Version 1.2 workflow and deployment
+
+Deploy the top-level `solutions/` directory with the application. No schema
+migration is needed for solution content or presentation preferences. Existing
+records and reports are retained and are not silently recomputed. New computations
+record algorithm version 1.2.1. Line-pair positioning uses the restored
+periodicity-based detector. Profiles from the withdrawn rigid-contour method
+are skipped for fresh line-pair proposals. Advanced settings replaces the misleading save button; its
+Back to results action uses already stored results. Finalize still archives a
+report revision. Back up the database before upgrading as usual.
+
+Field-edge acceptance remains `field_pct_sid: 2.0` in
+`data/phantom_definitions/msf_v1.json`; the existing tolerance is retained by
+request. Changing this configuration affects future computations, not saved results.
+
+Validation on 26 October 2026:
+
+- Full regression run: **910 passed, 35 skipped**, with 36 passing subtests.
+- Final identity, solutions, rigid-layout and browser checks: **20 passed**.
+- All five JavaScript suites and syntax checks passed. Desktop and 360-pixel
+  mobile views were inspected. Tests used disposable databases.
+- Reference-scan fixtures remain unavailable. The contour envelope is derived
+  from nominal geometry; validate its fit against the physical phantom's scans
+  when those fixtures are available.
+
+The 1.2.1 correction removes the view selector and keeps Auto Analyze focused on
+operators. Detailed measurements remain in Analyze. Stage F has a sticky return
+button at the top; it opens saved stage E results, including signed-off records,
+without recomputing them.

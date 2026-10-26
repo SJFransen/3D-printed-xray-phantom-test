@@ -40,14 +40,29 @@
     let data;
     try { data = await response.json(); }
     catch (_) { throw new Error("The server did not return a result. Check History before uploading again."); }
-    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The analysis could not be completed.");
+    if (!response.ok) {
+      const error = new Error(typeof data.detail === "string" ? data.detail : "The analysis could not be completed.");
+      error.status = response.status; throw error;
+    }
     return data;
   }
 
   const upload = UploadForm.mount(get("auto-upload-fields"), {
-    prefix: "auto", request, compact: true,
+    prefix: "auto", request,
     onUpload: () => { if (!busy) form.requestSubmit(); },
   });
+  function showUpload(workflow = "auto") {
+    if (busy) return;
+    get("upload-workflow").value = workflow;
+    get("view-analyze").classList.add("hidden");
+    get("view-history").classList.add("hidden");
+    get("tab-analyze").classList.remove("active");
+    get("tab-history").classList.remove("active");
+    get("auto-results-page").classList.add("hidden");
+    form.classList.remove("hidden");
+    document.dispatchEvent(new CustomEvent("phantomqa:tab", {detail: "auto-analyse"}));
+  }
+  document.addEventListener("phantomqa:upload", event => showUpload(event.detail));
   let refreshVersion = 0, dirty = false;
   async function refreshSavedResult() {
     const index = activeIndex, current = analyses[index], version = ++refreshVersion;
@@ -73,6 +88,7 @@
     }
   });
   get("tab-auto-analyse").addEventListener("click", () => {
+    if (!form.classList.contains("hidden")) get("upload-workflow").value = "auto";
     get("view-analyze").classList.add("hidden");
     get("view-history").classList.add("hidden");
     get("tab-analyze").classList.remove("active");
@@ -80,8 +96,20 @@
     document.dispatchEvent(new CustomEvent("phantomqa:tab", {detail: "auto-analyse"}));
   });
 
-  function renderTasks(tasks) {
-    get("auto-tasks").replaceChildren();
+  async function loadTaskPanel(host, aid) {
+    try {
+      const record = await request(`api/auto-analyse/${encodeURIComponent(aid)}`);
+      if (host.isConnected && host.dataset.analysisTasks === aid) renderTasks(record.tasks, host);
+    } catch (_) {
+      if (host.isConnected) host.textContent = "Guidance could not be loaded. Reopen results to retry.";
+    }
+  }
+  document.addEventListener("phantomqa:render-tasks", event => {
+    const {host, aid} = event.detail;
+    if (host && typeof aid === "string") loadTaskPanel(host, aid);
+  });
+  function renderTasks(tasks, target = get("auto-tasks")) {
+    target.replaceChildren();
     for (const task of [...tasks].sort((a, b) => (b.priority === "high") - (a.priority === "high"))) {
       const card = make("article", "", "auto-task");
       card.dataset.taskId = task.id; card.dataset.taskType = task.type;
@@ -92,6 +120,38 @@
         const steps = make("ol");
         task.steps.forEach(step => steps.append(make("li", step))); card.append(steps);
       }
+      for (const step of task.solutions || []) {
+        const dropdown = make("details", "", "solution-step");
+        dropdown.open = task.solutions.length === 1;
+        dropdown.append(make("summary", step.title));
+        for (const content of step.content) {
+          const audiences = target.id === "auto-tasks" ? ["all", "operator"]
+            : ["all", "operator", "technician", "physicist"];
+          if (!audiences.includes(content.audience)) continue;
+          for (const block of content.blocks) {
+            if (block.type === "text") {
+              dropdown.append(make("p", block.text, "solution-text"));
+              continue;
+            }
+            const url = new URL(block.url, document.baseURI);
+            if (url.origin !== location.origin || !url.pathname.includes("/api/solutions/")) continue;
+            if (block.type === "image") {
+              const img = make("img"); img.src = url.href; img.alt = block.description;
+              img.loading = "lazy"; dropdown.append(img);
+              img.addEventListener("error", () => img.replaceWith(make("p", "Image unavailable. Continue with the written instructions.")));
+            } else if (block.type === "video") {
+              const video = make("video"); video.src = url.href; video.controls = true;
+              video.preload = "none"; video.setAttribute("aria-label", block.description);
+              video.append(make("p", "Video playback is unavailable.")); dropdown.append(video);
+              const link = make("a", "Open or download video"); link.href = url.href;
+              dropdown.append(link);
+            }
+          }
+        }
+        card.append(dropdown);
+      }
+      if (task.type === "feature_solution" && !task.solutions?.length)
+        card.append(make("p", "No troubleshooting steps are available yet. Contact your technical support team."));
       for (const reference of task.image_references || []) {
         // Image references are restricted to this application or embedded images.
         const url = new URL(reference.url, document.baseURI);
@@ -99,7 +159,7 @@
         const img = make("img"); img.src = url.href; img.alt = reference.description || "Task illustration";
         card.append(img);
       }
-      get("auto-tasks").append(card);
+      target.append(card);
     }
   }
 
@@ -169,6 +229,12 @@
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (busy || !upload.nodes.file.files.length || !form.reportValidity()) return;
+    if (get("upload-workflow").value === "analyze") {
+      busy = true; upload.setBusy(true);
+      try { await uploadToAnalyze(upload); }
+      finally { busy = false; upload.setBusy(false); }
+      return;
+    }
     viewer.clear();
     busy = true;
     const data = upload.data();
@@ -199,7 +265,8 @@
     } catch (error) {
       get("auto-results-page").classList.add("hidden");
       form.classList.remove("hidden");
-      get("auto-error").textContent = "The upload could not be completed. Check History before trying again.";
+      get("auto-error").textContent = (error.status === 422 ? error.message : "The upload could not be completed.")
+        + " Check History before trying again.";
       get("auto-error").classList.remove("hidden");
     } finally {
       busy = false; form.removeAttribute("aria-busy");

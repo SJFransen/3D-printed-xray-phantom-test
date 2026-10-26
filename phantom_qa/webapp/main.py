@@ -25,13 +25,13 @@ import numpy as np
 from fastapi import (FastAPI, File, Form, HTTPException, Request, Response,
                      UploadFile)
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, conlist, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from .. import ALGO_VERSION
-from .. import ingest, layout_profile, pipeline
+from .. import ingest, layout_profile, pipeline, solutions
 from ..analysis import linepairs
 from ..analysis.common import roi_center_from_px
 from ..comparison_report import build_comparison_report
@@ -538,9 +538,34 @@ async def _read_upload(request: Request, file: UploadFile):
     return data, scans
 
 
+@app.post("/api/uploads/preview")
+async def preview_upload(request: Request, file: UploadFile = File(...)):
+    _, scans = await _read_upload(request, file)
+    return {"scans": [{"source_name": scan.source_name, "institution": ingest.institution(scan.meta)}
+                      for scan in scans]}
+
+
+@app.get("/api/solutions/{asset_path:path}")
+def solution_asset(asset_path: str):
+    path = solutions.media_path(asset_path)
+    if path is None:
+        raise HTTPException(404, "Solution media not found")
+    return FileResponse(path)
+
+
+def _upload_labels(scans, labels):
+    """Validate the whole archive before any scan is inserted."""
+    clean = {key: str(labels.get(key) or "").strip()
+             for key in ("site", "phantom", "operator", "notes")}
+    if not clean["site"] and any(not ingest.institution(scan.meta) for scan in scans):
+        raise HTTPException(422, "Enter a site / institution; this file has no institution in its DICOM headers.")
+    return clean
+
+
 def _save_upload(scan, data: bytes, labels: dict, request: Request,
                  *, reuse_existing: bool = False, fill_labels_on_reuse: bool = True):
     """Shared source persistence and upload auditing. Returns (id, created)."""
+    labels = {**labels, "site": labels.get("site") or ingest.institution(scan.meta)}
     args = (scan, scan.source_bytes or data, ingest.protocol_signature(scan.meta),
             ALGO_VERSION, pdef.version)
     if reuse_existing:
@@ -579,6 +604,7 @@ async def upload(request: Request, file: UploadFile = File(...),
 
 
 def _upload_analyses(scans, data, labels, request, allow_duplicate=False):
+    labels = _upload_labels(scans, labels)
     user, client = _current_user(request), _client_key(request)
 
     # The same file analysed twice produces two records that look identical in

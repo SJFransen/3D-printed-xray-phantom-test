@@ -20,6 +20,10 @@
 
 <main id="view-auto-analyse">
   <form id="auto-upload-form" class="auto-card auto-upload-card">
+    <label>Workflow <select id="upload-workflow">
+      <option value="auto">Auto Analyze</option>
+      <option value="analyze">Analyze step by step</option>
+    </select></label>
     <div id="auto-upload-fields"></div>
     <p id="auto-error" class="hidden" role="alert"></p>
   </form>
@@ -91,7 +95,7 @@
       <li data-stage="C">C&nbsp;Measuring&nbsp;points</li>
       <li data-stage="D">D&nbsp;Dimensions</li>
       <li data-stage="E">E&nbsp;Analysis</li>
-      <li data-stage="F">F&nbsp;Save&nbsp;&amp;&nbsp;export</li>
+      <li data-stage="F">F&nbsp;Advanced&nbsp;settings</li>
     </ol>
     <div id="identity-bar"></div>
     <div id="stage-content"></div>
@@ -273,8 +277,8 @@
   <div id="file-chosen" class="chosen hidden"></div>
   <h3>2 · Identify this scan</h3>
   <div class="form-grid auto-labels">
-    <label>Site <input id="up-site" name="site" list="dl-site" placeholder="e.g. Goma Hospital"></label>
-    <label>Phantom <input id="up-phantom" name="phantom" list="dl-phantom" placeholder="e.g. MSF-01"></label>
+    <label>Site / institution (required) <input id="up-site" name="site" list="dl-site" required placeholder="e.g. Goma Hospital"></label>
+    <label>Phantom ID <input id="up-phantom" name="phantom" list="dl-phantom" placeholder="e.g. MSF-01"></label>
     <label>Operator <input id="up-operator" name="operator" placeholder="optional"></label>
     <label>Notes <input id="up-notes" name="notes" placeholder="optional"></label>
   </div>

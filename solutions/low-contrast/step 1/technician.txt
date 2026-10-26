@@ -1,0 +1,2 @@
+Review disc-grid positioning, object/background ROIs and CNR for each disc. Check whether an apparent change comes from positioning, acquisition conditions or a repeatable difference from the reference.
+Compare with prior scans of the same phantom and acquisition protocol. Escalate unresolved issues to the medical physicist.

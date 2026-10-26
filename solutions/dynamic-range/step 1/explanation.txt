@@ -1,0 +1,4 @@
+Wedge
+
+Check that the wedge outline and measuring areas line up with the printed wedge steps.
+If the position looks wrong, ask the technician to review it in Analyze before interpreting the result.

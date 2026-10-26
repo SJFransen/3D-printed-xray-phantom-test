@@ -40,6 +40,15 @@
 #view-auto-analyse .auto-task { margin: 0; padding: 14px 0; border-top: 1px solid var(--border); line-height: 1.6; }
 #view-auto-analyse .auto-task:first-child { border-top: 0; padding-top: 0; }
 #view-auto-analyse .auto-task img { max-width: 100%; }
+#view-auto-analyse .auto-task video { display: block; width: 100%; margin: 10px 0; }
+#view-auto-analyse .solution-step { padding: 8px 0; }
+#view-auto-analyse summary { cursor: pointer; padding: 6px 0; }
+#view-auto-analyse .solution-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.analysis-tasks .auto-task { padding: 12px 0; border-top: 1px solid var(--border); line-height: 1.6; }
+.analysis-tasks .solution-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.analysis-tasks img, .analysis-tasks video { max-width: 100%; display: block; margin: 10px 0; }
+.analysis-tasks summary { cursor: pointer; padding: 8px 0; }
+@media (max-width: 650px) { header { flex-wrap: wrap; } }
 #view-auto-analyse .auto-viewer-toolbar {
   display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
   background: var(--panel); font-size: 12px; margin-top: 12px; flex-shrink: 0;
