@@ -1,1 +1,0 @@
-Review measurement reliability, acquisition conditions, the reference scan and the saved revisions. Use comparable history to distinguish isolated acquisition errors from persistent or gradual changes. Record any validation decision through the existing validation workflow.

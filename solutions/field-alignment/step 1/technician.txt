@@ -1,2 +1,0 @@
-Review the manually visible field boundaries, the ruler central lines and the actual SID. Compare each side?s recorded deviation in millimetres and percent of SID with its configured tolerance.
-Compare with prior scans of the same phantom and acquisition protocol. Escalate unresolved issues to the medical physicist.

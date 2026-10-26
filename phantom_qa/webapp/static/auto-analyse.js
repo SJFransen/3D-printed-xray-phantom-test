@@ -247,8 +247,6 @@
               const video = make("video"); video.src = url.href; video.controls = true;
               video.preload = "none"; video.setAttribute("aria-label", block.description);
               video.append(make("p", "Video playback is unavailable.")); dropdown.append(video);
-              const link = make("a", "Open or download video"); link.href = url.href;
-              dropdown.append(link);
             }
           }
         }

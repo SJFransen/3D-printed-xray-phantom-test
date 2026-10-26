@@ -38,7 +38,7 @@ Use an exact filename, for example `[image placement.png]`, to disambiguate.
 
 Images: PNG, JPG, JPEG. Videos: MP4, WebM, OGV, MOV. Browser playback depends
 on the codec; MP4 with H.264 or WebM is preferable. Videos do not autoplay or
-preload; a direct link is available when playback is unsupported. Missing or
+preload. Missing or
 ambiguous media produces a written fallback rather than hiding the explanation.
 
 Multiple solution steps start collapsed and can be opened independently.

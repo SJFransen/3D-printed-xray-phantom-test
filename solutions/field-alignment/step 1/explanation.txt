@@ -2,3 +2,5 @@ Field alignment
 
 Check that the exposure shows the field edges and that the displayed edge markers follow them.
 If the position looks wrong, ask the technician to review it in Analyze before interpreting the result.
+
+[image Skyline Groningen.jpg]
