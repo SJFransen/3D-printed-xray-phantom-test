@@ -29,6 +29,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Fil
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, conlist, field_validator
 from starlette.concurrency import run_in_threadpool
+from .compression import TextGZipMiddleware
+from ..report_controls import SCRIPT_HASH
+from .. import thumbnails
 
 from .. import ALGO_VERSION
 from .. import ingest, layout_profile, pipeline, solutions
@@ -68,6 +71,7 @@ if not cfg.deletion_enabled:
 
 app = FastAPI(title="MSF Phantom QA", docs_url=None, redoc_url=None,
               openapi_url=None, root_path=cfg.root_path)
+app.add_middleware(TextGZipMiddleware, minimum_size=900, compresslevel=6)
 store = Store(ROOT)
 pdef = load_default()
 
@@ -223,9 +227,12 @@ async def security_middleware(request: Request, call_next):
     response.headers["Permissions-Policy"] = \
         "geolocation=(), microphone=(), camera=()"
     # Reports embed their charts as data: URIs; nothing is loaded cross-origin.
+    report_script = (" 'sha256-" + SCRIPT_HASH + "'" if
+                     path == "/api/comparison_report.html" or
+                     (path.startswith("/api/analyses/") and path.endswith("/report.html")) else "")
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+        f"script-src 'self'{report_script}; connect-src 'self'; frame-ancestors 'none'; "
         "base-uri 'none'; form-action 'self'")
     if cfg.https_only:
         response.headers["Strict-Transport-Security"] = \
@@ -349,7 +356,7 @@ def secrets_equal(a: str, b: str) -> bool:
     return hmac.compare_digest((a or "").encode(), (b or "").encode())
 
 
-def _scan(aid: str) -> ingest.ScanData:
+def _scan(aid: str, cache: bool = True) -> ingest.ScanData:
     with _cache_lock:
         cached = _scans.get(aid)
         if cached is not None:
@@ -383,7 +390,8 @@ def _scan(aid: str) -> ingest.ScanData:
             422, "The stored source file could not be decoded as an image. "
                  "It may be corrupted — run 'verify' to check its SHA-256.")
     match = next((s for s in scans if s.sha256 == rec["sha256"]), scans[0])
-    _cache_scan(aid, match)
+    if cache:
+        _cache_scan(aid, match)
     return match
 
 
@@ -1905,9 +1913,25 @@ def comparison_report(ids: str = "", site: str = "", phantom: str = "",
     suffix = ""
     if site or phantom:
         suffix = " — " + " / ".join(x for x in (site, phantom) if x)
+    pictures = {}
+    for selected in recs:
+        aid = selected["id"]
+        rec = store.get(aid)
+        if rec is None:
+            pictures[aid] = thumbnails.unavailable("Analysis was deleted — no picture")
+            continue
+        def make_ctx(rec=rec, aid=aid):
+            scan = _scan(aid, cache=False)
+            return pipeline.build_ctx(scan, pdef, _reg(aid, rec),
+                                      {"scan_meta": scan.meta, "sid_mm": rec.get("sid_mm") or 1000.0})
+        pictures[aid] = thumbnails.pictures_for(
+            rec, store.thumbs_dir(aid), make_ctx,
+            pdef_version=pdef.version, algo_version=ALGO_VERSION)
+        if not store.exists(aid):
+            thumbnails.forget(store.thumbs_dir(aid))
     with _report_lock:
         return build_comparison_report(
-            recs, title_suffix=suffix,
+            recs, title_suffix=suffix, pictures=pictures,
             filters={"site": site, "phantom": phantom, "signature": signature,
                      "validation": validation})
 

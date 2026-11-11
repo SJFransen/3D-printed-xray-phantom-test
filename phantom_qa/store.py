@@ -129,6 +129,7 @@ _ADDED_COLUMNS = {
         "phantom_norm": "TEXT DEFAULT ''",
         "algo_version": "TEXT DEFAULT ''",
         "updated_by": "TEXT DEFAULT ''",
+        "source_json": "TEXT DEFAULT ''",
     },
 }
 
@@ -578,6 +579,8 @@ class Store:
         if row is None:
             return None
         d = dict(row)
+        # Internal save-time evidence does not change the profile API.
+        d.pop("source_json", None)
         try:
             d["layout"] = json.loads(d.pop("layout_json") or "{}")
             if not isinstance(d["layout"], dict):
@@ -614,6 +617,15 @@ class Store:
                 "   updated_by=excluded.updated_by",
                 (key, self.profile_norm(key), json.dumps(layout), pdef_version,
                  algo_version, source_analysis_id, now, now, updated_by))
+            source_row = c.execute("SELECT geometry_json FROM analyses WHERE id=?",
+                                   (source_analysis_id,)).fetchone()
+            geometry = self._loads_geometry(source_row["geometry_json"], source_analysis_id) if source_row else None
+            evidence = {"source_analysis_id": source_analysis_id,
+                        "geometry_fingerprint": hashlib.sha256(json.dumps(
+                            geometry, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                            if geometry is not None else None}
+            c.execute("UPDATE phantom_profiles SET source_json=? WHERE phantom_key=?",
+                      (json.dumps(evidence), key))
             near = [r["phantom_key"] for r in c.execute(
                 "SELECT phantom_key FROM phantom_profiles"
                 " WHERE phantom_norm=? AND phantom_key<>?",
@@ -796,6 +808,13 @@ class Store:
         with self._conn() as c:
             return c.execute("SELECT 1 FROM analyses WHERE id=?",
                              (aid,)).fetchone() is not None
+
+    def thumbs_dir(self, aid: str) -> str | None:
+        """Derived cache location; never accept directory traversal tokens."""
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", aid):
+            return None
+        return os.path.join(self.root, "data", "thumbs", aid)
 
     def upload_path(self, aid: str) -> str:
         return os.path.join(self.root, "data", "uploads", f"{aid}.bin")
@@ -1195,6 +1214,8 @@ class Store:
             c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
             c.execute("DELETE FROM analysis_revisions WHERE analysis_id=?", (aid,))
             pruned = self._prune_profile(c, label)
+        from .thumbnails import forget
+        forget(self.thumbs_dir(aid))
         p = self.upload_path(aid)
         if os.path.exists(p):
             os.remove(p)

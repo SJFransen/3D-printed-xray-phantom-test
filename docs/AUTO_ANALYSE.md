@@ -231,6 +231,11 @@ can prevent the preview from loading; the status borders and To Do remain availa
 
 ## Validation
 
+Report additions and performance changes on `merge_dev_stefan_silvester` are
+documented in [SILVESTER_ADAPTATION.md](SILVESTER_ADAPTATION.md). They preserve
+the automatic/manual handoff and measurement methods described above. New
+reports provide browser PDF export; comparisons include cached scan pictures.
+
 Run `python -m pytest -q`, plus:
 
 ```text

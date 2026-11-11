@@ -17,6 +17,7 @@ DICOMDIR
 # The -wal and -shm companions are SQLite's write-ahead log and its shared
 # memory index: runtime-only, recreated automatically, never committed.
 /data/uploads/
+/data/thumbs/
 /data/backup/
 /data/*.sqlite3
 /data/*.sqlite3-wal

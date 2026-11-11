@@ -14,6 +14,13 @@ collapsed appendix. Every visual identifies entries by Site / Phantom ID.
 from __future__ import annotations
 
 import base64
+import contextvars
+import re
+import secrets
+from concurrent.futures import ThreadPoolExecutor
+
+from . import thumbnails
+from .report_controls import controls, print_css
 import html
 import io
 
@@ -60,9 +67,13 @@ _PANELS = {
 def _b64(fig) -> str:
     import matplotlib.pyplot as plt
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=115, bbox_inches="tight")
+    # Draw once without costly deflate; bounded workers compress while the
+    # calling thread draws the next chart. Pixel content stays identical.
+    fig.savefig(buf, format="png", dpi=115, bbox_inches="tight",
+                pil_kwargs={"compress_level": 0})
     plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode()
+    batch = _CHART_BATCH.get()
+    return batch.submit(buf.getvalue()) if batch else _encode_chart(buf.getvalue())
 
 
 def _img(b64, cls="") -> str:
@@ -455,8 +466,116 @@ def _variability_chart(keys, maps, top=14):
 
 # --------------------------------------------------------------------- report
 
-def build_comparison_report(records: list[dict], title_suffix: str = "",
-                            filters: dict | None = None) -> str:
+_CHART_BATCH = contextvars.ContextVar("comparison_chart_batch", default=None)
+
+def _encode_chart(png):
+    from PIL import Image
+    buf = io.BytesIO()
+    with Image.open(io.BytesIO(png)) as image:
+        image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+class _ChartBatch:
+    """The charts of one report, encoded while the next is drawn.
+
+    Each chart takes a placeholder in the page, numbered in the order the
+    charts were drawn, and the placeholders are replaced by the finished
+    pictures once the page is composed. The placeholder carries a random
+    string drawn afresh for every report, so nothing written on the page — a
+    site or phantom label, anything an operator typed — can pass for one: it
+    would have to guess a string that did not exist when it was written."""
+
+    def __init__(self, pool: ThreadPoolExecutor):
+        self._pool = pool
+        self._jobs: list = []
+        self._nonce = secrets.token_hex(8)
+        self._placeholder = re.compile(rf"@@chart-{self._nonce}-(\d+)@@")
+
+    def submit(self, png: bytes) -> str:
+        self._jobs.append(self._pool.submit(_encode_chart, png))
+        return f"@@chart-{self._nonce}-{len(self._jobs) - 1}@@"
+
+    def raise_first_failure(self) -> None:
+        """Wait for every chart, and fail as encoding them in turn would have.
+
+        In turn, the first chart that failed would have stopped the report
+        right there, so its error — not a later one, and not whatever the
+        rest of the page ran into after it — is the one to raise."""
+        for job in self._jobs:
+            failure = job.exception()
+            if failure is not None:
+                raise failure
+
+    def fill(self, page: str) -> str:
+        return self._placeholder.sub(
+            lambda m: self._jobs[int(m.group(1))].result(), page)
+
+def _picture_section(ordered, labels, pictures):
+    titles = {"phantom": "Whole phantom", "linepairs": "Line-pair strip",
+              "wedge": "Step wedge", "lowcontrast": "Low contrast (unprocessed; own window)",
+              "uniformity": "Uniformity squares"}
+    # First available scan within each acquisition protocol supplies the shared
+    # window. Never compare brightness across different protocols.
+    references = {}
+    for rec in ordered:
+        for region in thumbnails.REGIONS:
+            pic = pictures.get(rec["id"], {}).get(region, {})
+            if thumbnails.drawable(pic):
+                references.setdefault((rec.get("signature") or "", region), pic)
+    rows = []
+    for region in thumbnails.REGIONS:
+        cells = []
+        for rec in ordered:
+            pic = pictures.get(rec["id"], {}).get(region, {})
+            if not thumbnails.drawable(pic):
+                body = html.escape(str(pic.get("missing", "Picture unavailable")))
+            else:
+                ref = references[(rec.get("signature") or "", region)]
+                window = pic if pic.get("window") == "self" else ref
+                try:
+                    encoded = thumbnails.encode_on(pic, window["lo"], window["hi"])
+                except Exception:
+                    cells.append('<td class="report-picture">Picture unavailable</td>')
+                    continue
+                uri = "data:" + encoded["mime"] + ";base64," + encoded["b64"]
+                alt = html.escape(titles[region] + " — " + str(rec.get("phantom") or rec["id"]), quote=True)
+                body = (f'<img src="{uri}" alt="{alt}"><details><summary>Enlarge picture</summary>'
+                        f'<img class="enlarged" src="{uri}" alt="{alt}"></details>')
+            cells.append('<td class="report-picture">' + body + '</td>')
+        rows.append((titles[region], cells))
+    # Three scan columns fit an A4 landscape page. All selected scans remain
+    # present, in the same order, without shrinking them into unreadable cells.
+    tables = []
+    for start in range(0, len(ordered), 3):
+        head = ''.join('<th scope="col">'+html.escape(label.replace("\n", " "))+'</th>'
+                       for label in labels[start:start + 3])
+        body = ''.join('<tr><th scope="row">' + title + '</th>' +
+                       ''.join(cells[start:start + 3]) + '</tr>' for title, cells in rows)
+        tables.append('<div class="scroll"><table class="pictures"><thead><tr><th>Region</th>' +
+                      head + '</tr></thead><tbody>' + body + '</tbody></table></div>')
+    return ('<section class="card"><h2>Scan pictures</h2><p>Pictures are aligned in the phantom frame. '
+            'Each row shares the first available scan’s window within its protocol, except low contrast. '
+            'Small pictures are for comparison; inspect fine detail in Analyze.</p>'
+            + ''.join(tables) + '</section>')
+
+def build_comparison_report(records, title_suffix="", filters=None, pictures=None):
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="report-encode") as pool:
+        batch = _ChartBatch(pool)
+        token = _CHART_BATCH.set(batch)
+        try:
+            try:
+                page = _compose_comparison_report(records, title_suffix, filters, pictures)
+            except BaseException:
+                batch.raise_first_failure()
+                raise
+            batch.raise_first_failure()
+            return batch.fill(page)
+        finally:
+            _CHART_BATCH.reset(token)
+
+
+def _compose_comparison_report(records: list[dict], title_suffix: str = "",
+                            filters: dict | None = None, pictures=None) -> str:
     ordered, keys, maps = _collect(records)
     if not ordered:
         return ("<!doctype html><html><body style='font-family:sans-serif;"
@@ -573,7 +692,13 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
           font-size:12px; }}
  .fact b {{ font-size:15px; display:block; }}
  @media print {{ body {{ background:#fff; }} .card {{ break-inside:avoid; }} }}
+ .pictures td {{ min-width:180px; vertical-align:top; white-space:normal; }}
+ .pictures img {{ max-width:260px; max-height:220px; object-fit:contain; }}
+ .pictures .enlarged {{ max-width:none; max-height:none; }}
+ .report-picture summary {{ color:#41506a; }}
+ {print_css("Comparison | " + span, landscape=True)}
 </style></head><body><div class="wrap">
+{controls()}
 <h1>MSF Phantom QA — comparison{html.escape(title_suffix)}</h1>
 <p class="muted" style="font-size:12px">{html.escape(span)}
 {(' · ' + filt) if filt else ''}</p>
@@ -608,5 +733,6 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
   red stands out.</p>
 </section>
 
+{_picture_section(ordered, labels, pictures) if pictures is not None else ""}
 {sections}
 </div></body></html>"""

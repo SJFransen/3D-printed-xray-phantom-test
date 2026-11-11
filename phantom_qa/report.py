@@ -8,6 +8,8 @@ PNGs, so the report file has no external dependencies (offline/archive safe).
 
 from __future__ import annotations
 
+from .report_controls import controls, print_css
+
 import base64
 import html
 import io
@@ -628,7 +630,9 @@ def build_report(record: dict, overlay_png: bytes | None = None,
  .vcomment {{ font-size:12.5px; margin-top:8px; background:#f2f5f8;
               border-radius:6px; padding:8px 10px; }}
  @media print {{ body {{ background:#fff; }} .card {{ break-inside: avoid; }} }}
+{print_css("Analysis " + record["id"] + " | Uploaded " + record["created_at"])}
 </style></head><body><div class="wrap">
+{controls()}
 <h1>MSF Phantom QA report</h1>
 <p class="muted" style="font-size:12px">
 <b>Analysis</b> {html.escape(record['id'])} ·
