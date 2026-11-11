@@ -1165,6 +1165,8 @@ class BlockPlace(BaseModel):
     than a 500 from numpy further down."""
     center_px: conlist(float, min_length=2, max_length=2) | None = None
     angle_deg: float | None = None
+    flip_x: bool | None = None
+    flip_y: bool | None = None
     corners_px: conlist(
         conlist(float, min_length=2, max_length=2),
         min_length=4, max_length=4) | None = None
@@ -1225,8 +1227,15 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
         # the grid shift was a refinement of the OLD placement; drop it
         lcg["grid_shift_mm"] = [0.0, 0.0]
         lcg["grid_angle_offset_deg"] = 0.0
+        if body.flip_x is not None or body.flip_y is not None:
+            old_orientation = lcg.get('insert_orientation') or {}
+            lcg['insert_orientation'] = {
+                'flip_x': body.flip_x if body.flip_x is not None else old_orientation.get('flip_x',False),
+                'flip_y': body.flip_y if body.flip_y is not None else old_orientation.get('flip_y',False),
+                'source': 'user'}
         lcg["circles"] = pipeline.to_jsonable(
-            lowcontrast.circles_for_block(ctx, centre, angle))
+            lowcontrast.circles_for_block(ctx, centre, angle,
+                                          insert_orientation=lcg.get('insert_orientation')))
         for c in lcg["circles"]:
             for k in ("roi", "bg_roi", "full_circle"):
                 c[k]["manually_adjusted"] = True

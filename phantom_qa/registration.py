@@ -4,11 +4,10 @@ Phantom frame: origin at phantom-face center, +x right / +y up in the canonical
 orientation of the guide figure, units mm. Image frame: (x, y) = (col, row), y down.
 
 Pipeline:
-  1. coarse: threshold the downsampled image, largest blob = phantom face
-  2. rect: rotating-calipers angle + sub-pixel edge refinement (profile fits) ->
-     4 outer corner points
-  3. candidates: 8 corner assignments (4 rotations x mirror) -> affine fits
-  4. scoring: sample wedge monotonicity, line-pair activity, low-contrast smoothness
+  1. coarse: centre-seeded square hypotheses and enclosed-region proposals
+  2. rect: jointly score four sides, then refine supported edge profiles
+  3. candidates: 8 corner assignments (4 rotations x mirror), similarity fits
+  4. scoring: independent structural outlines, not measured QA outcomes
   5. result: best transform + per-candidate scores + verification residuals
 """
 
@@ -19,7 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import ndimage
 
-from .features import (edge_position, fit_line_tls, locate_line_center,
+from .features import (fit_line_tls, locate_line_center,
                        roi_stats_rect, sample_profile)
 
 
@@ -140,24 +139,18 @@ def _min_area_angle(points: np.ndarray) -> float:
     return float(fine[int(np.argmin([bbox_area(a) for a in fine]))]) % 90.0
 
 
-def detect_phantom_rect(pixels: np.ndarray, downscale: int = 8):
+def detect_phantom_rect(pixels: np.ndarray, downscale: int = 8, initial_corners=None):
     """Detect the phantom's outer square with sub-pixel corners.
 
     Returns dict with 'corners' (4x2 px, clockwise in image coords), 'edge_lines',
     'edge_points', 'coarse_angle_deg'."""
-    mask, ds = detect_phantom_mask(pixels, downscale)
-    ys, xs = np.nonzero(mask)
-    pts = np.stack([xs, ys], axis=1).astype(float) * ds + ds / 2
-
-    angle = _min_area_angle(pts)
-    r = np.deg2rad(angle)
-    R = np.array([[np.cos(r), -np.sin(r)], [np.sin(r), np.cos(r)]])
-    q = pts @ R.T
-    x0, x1 = q[:, 0].min(), q[:, 0].max()
-    y0, y1 = q[:, 1].min(), q[:, 1].max()
-    # rect corners in rotated space, clockwise starting "top-left" (min x, min y)
-    rect = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
-    corners0 = rect @ R  # back to image space
+    from .registration_model import detect
+    corners0 = np.asarray(initial_corners if initial_corners is not None
+                          else detect(pixels)[0]['corners'], float)
+    pts = corners0
+    ds = downscale
+    direction = corners0[1]-corners0[0]
+    angle = float(np.degrees(np.arctan2(direction[1],direction[0])))
 
     # --- sub-pixel refinement of each edge -------------------------------
     edge_lines = []
@@ -180,7 +173,13 @@ def detect_phantom_rect(pixels: np.ndarray, downscale: int = 8):
             p_out = base + probe_half * normal
             ts, vals = sample_profile(pixels, p_in, p_out, int(2 * probe_half),
                                       avg_half_width=2.0, n_avg=3)
-            e = edge_position(vals, rising=False, smooth_sigma=2.0)
+            # Either frame polarity is possible. Refine the nearest supported
+            # transition, rather than jumping across a bright surrounding field.
+            smooth = ndimage.gaussian_filter1d(vals, 2.)
+            derivative = np.abs(np.gradient(smooth))
+            prior = np.exp(-.5*((np.arange(len(vals))-len(vals)/2)/(len(vals)/5))**2)
+            from .features import centroid_peak
+            e = centroid_peak(derivative, int(np.argmax(derivative*prior)), half=2)
             t = np.interp(e, np.arange(len(ts)), ts)
             pts_edge.append(p_in + t * (p_out - p_in) / np.linalg.norm(p_out - p_in))
         pts_edge = np.asarray(pts_edge)
@@ -329,29 +328,55 @@ def verify_landmarks(pixels: np.ndarray, T: Transform, pdef) -> tuple[dict, floa
     return landmarks, rms
 
 
-def register(pixels: np.ndarray, pdef, corners_hint: np.ndarray | None = None):
+def register(pixels: np.ndarray, pdef, corners_hint: np.ndarray | None = None,
+             spacing_mm: float | None = None):
     """Full registration. ``corners_hint`` (4x2 px) overrides automatic rect
     detection (manual corner clicks from the UI)."""
     if corners_hint is not None:
         rect = {"corners": np.asarray(corners_hint, float),
                 "coarse_angle_deg": float("nan")}
+        rectangles = [rect]
     else:
-        rect = detect_phantom_rect(pixels)
+        from .registration_model import detect
+        prior = pdef.side_mm / spacing_mm if spacing_mm is not None and spacing_mm > 0 else None
+        rectangles = []
+        for candidate in detect(pixels, side_px_prior=prior)[:4]:
+            try:
+                rectangles.append(detect_phantom_rect(pixels, initial_corners=candidate['corners']))
+            except (ValueError, np.linalg.LinAlgError):
+                continue
+        if not rectangles:
+            raise ValueError('Phantom borders could not be refined; place the corners manually.')
 
-    cands = candidate_transforms(rect["corners"], pdef.side_mm)
     scored = []
-    for T, meta in cands:
-        parts = score_transform(pixels, T, pdef)
-        scored.append((parts["total"], T, meta, parts))
+    from .registration_model import structural_score
+    for rect in rectangles:
+        for T, meta in candidate_transforms(rect['corners'], pdef.side_mm):
+            if corners_hint is None:
+                # Closest uniform-scale orthogonal transform; retain reflection.
+                u, s, vt = np.linalg.svd(T.A)
+                T = Transform((u @ vt)*np.mean(s), T.t)
+            parts = structural_score(pixels, T, pdef)
+            scored.append((parts['total'], T, {**meta, 'rect': rect}, parts))
     scored.sort(key=lambda x: -x[0])
     best_score, best_T, best_meta, best_parts = scored[0]
+
+    alternatives = [score for score,T,_,_ in scored[1:] if
+                    np.linalg.norm(T.A/T.px_per_mm-best_T.A/best_T.px_per_mm) > .25]
+    margin = best_score-max(alternatives) if alternatives else best_score
+
+    if corners_hint is None and (best_score < .10 or margin < .025 or
+            sum(v > .01 for k,v in best_parts.items() if k != 'total') < 2):
+        raise ValueError('Phantom layout could not be verified; place the corners manually.')
+    best_parts = {**best_parts, 'orientation_margin': float(margin),
+                  'method': 'square_structural_model' if corners_hint is None else 'manual_corners'}
 
     landmarks, rms = verify_landmarks(pixels, best_T, pdef)
 
     return Registration(
         transform=best_T,
-        corners_px=rect["corners"],
-        coarse_angle_deg=rect.get("coarse_angle_deg", float("nan")),
+        corners_px=best_meta['rect']["corners"],
+        coarse_angle_deg=best_meta['rect'].get("coarse_angle_deg", float("nan")),
         score=best_parts,
         candidate_scores=[{"total": s, "assignment": m["assignment"]}
                           for s, _, m, _ in scored],

@@ -141,11 +141,17 @@ def propose(ctx: Ctx) -> dict:
             grid_angle_offset = float((ang - block_angle + 90) % 180 - 90)
     block = rect_roi(ctx, block_center, (lc["size_mm"][0], lc["size_mm"][1]), block_angle,
                      roi_id="lowcontrast/block")
+    from .insert_orientation import read
+    orientation = (read(ctx, block_center, block_angle, grid_shift, grid_angle_offset)
+                   if detected else {'flip_x':False,'flip_y':False,'source':'undetermined'})
+    if orientation['source'] == 'measured':
+        circles = circles_for_block(ctx, block_center, block_angle, grid_shift,
+                                    grid_angle_offset, orientation)
     return {"block": block, "angle_deg": block_angle, "detected": detected,
             "positioning": positioning, "grid_positioning": grid_positioning,
             "grid_shift_mm": grid_shift, "grid_angle_offset_deg": grid_angle_offset,
             "circles": circles,
-            "bg_ring_mm": [bg_in, bg_out]}
+            "bg_ring_mm": [bg_in, bg_out], "insert_orientation": orientation}
 
 
 def compute(ctx: Ctx, geometry: dict) -> dict:
@@ -180,13 +186,18 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         reasons.append(f"Very low contrast on {', '.join(weak)} "
                        f"(|CNR| < 0.2): either genuinely at the limit of "
                        f"detectability, or the ROI is off the disc.")
+    orientation = geometry.get('insert_orientation')
+    if orientation and orientation.get('source') == 'undetermined':
+        reasons.append('Low-contrast insert orientation is undetermined; positional labels are retained. Check the insert orientation before comparing disc identities.')
     return {"rows": rows, "ordering_ok": bool(ordering_ok),
-            "status": "pass" if ordering_ok else "warn",
+            "status": "pass" if ordering_ok and not (orientation and orientation.get('source') == 'undetermined') else "warn",
+            "insert_orientation": orientation,
             "reasons": reasons, "affected": weak}
 
 
 def circles_for_block(ctx: Ctx, center_mm, angle_deg: float,
-                      shift_mm=(0.0, 0.0), grid_angle_offset_deg=0.0) -> list[dict]:
+                      shift_mm=(0.0, 0.0), grid_angle_offset_deg=0.0,
+                      insert_orientation=None) -> list[dict]:
     """Rebuild the eight circle ROIs from a block position and angle.
 
     The circles sit on a rigid grid in the block's own frame, so once the user
@@ -208,7 +219,8 @@ def circles_for_block(ctx: Ctx, center_mm, angle_deg: float,
 
     out = []
     for c in lc["circles"]:
-        cc = grid_center + c["u_mm"] * u + c["v_mm"] * v
+        orient = insert_orientation or {}
+        cc = grid_center + c["u_mm"] * (-1 if orient.get('flip_x') else 1) * u + c["v_mm"] * (-1 if orient.get('flip_y') else 1) * v
         out.append({
             "id": c["id"], "level": c["level"],
             "roi": circle_roi(ctx, cc, roi_dia, roi_id=f"lowcontrast/{c['id']}"),

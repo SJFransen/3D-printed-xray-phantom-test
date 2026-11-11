@@ -994,6 +994,11 @@ async function placeBlock(payload) {
   try {
     const r = await postJSON(`api/analyses/${S.aid}/lowcontrast_block`, payload);
     S.geometry.lowcontrast = r.lowcontrast;
+    const insertOrientation = r.lowcontrast.insert_orientation || {};
+    const insertSource = $("#lc-insert-source");
+    if (insertSource) insertSource.textContent = `Insert orientation: ${insertOrientation.source || "not assessed"}`;
+    document.querySelectorAll("[data-insert-axis]").forEach(button =>
+      button.setAttribute("aria-pressed", String(!!insertOrientation[button.dataset.insertAxis])));
     S.previewPending = false;
     noteHistory(r);
     // Every low-contrast ROI object was just replaced, so anything holding a
@@ -1678,6 +1683,27 @@ function stageC(c) {
     $("#lc-angle-minus").addEventListener("click", () => nudgeBlockAngle(-1));
     $("#lc-angle-plus").addEventListener("click", () => nudgeBlockAngle(+1));
     $("#lc-flip").addEventListener("click", () => flipBlock());
+    // Turning an individual insert over is independent of global registration.
+    const flipControl = $("#lc-flip");
+    const insertStatus = document.createElement("span");
+    insertStatus.id = "lc-insert-source";
+    insertStatus.className = "hint";
+    insertStatus.textContent = `Insert orientation: ${(S.geometry.lowcontrast.insert_orientation || {}).source || "not assessed"}`;
+    flipControl.parentNode.appendChild(insertStatus);
+    for (const [key, label] of [["flip_x", "Reverse insert length"], ["flip_y", "Reverse insert width"]]) {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "secondary-sm";
+      button.textContent = label; button.disabled = flipControl.disabled;
+      button.dataset.insertAxis = key;
+      button.setAttribute("aria-pressed", String(!!(S.geometry.lowcontrast.insert_orientation || {})[key]));
+      button.addEventListener("click", async () => {
+        const orientation = S.geometry.lowcontrast.insert_orientation || {};
+        button.disabled = true;
+        try { await placeBlock({ [key]: !orientation[key] }); }
+        finally { button.disabled = flipControl.disabled; }
+      });
+      flipControl.parentNode.appendChild(button);
+    }
     $("#btn-block-corners").addEventListener("click", () => {
       S.mode = "lccorners"; S.lcCorners = [];
       status("Click the 4 corners of the low-contrast block, in any order.");

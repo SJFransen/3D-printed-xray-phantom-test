@@ -57,7 +57,8 @@ def build_ctx(scan: ScanData, pdef: PhantomDef, reg: Registration,
 
 def run_stage_a(scan: ScanData, pdef: PhantomDef,
                 corners_hint=None) -> Registration:
-    return register(scan.pixels, pdef, corners_hint=corners_hint)
+    spacing = scan.spacing_candidates.get('PixelSpacing') or scan.spacing_candidates.get('ImagerPixelSpacing')
+    return register(scan.pixels, pdef, corners_hint=corners_hint, spacing_mm=spacing)
 
 
 def registration_to_dict(reg: Registration) -> dict:

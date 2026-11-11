@@ -62,7 +62,7 @@ _MM_FIELDS = {
 
 #: Per-test scalars that describe the phantom rather than the exposure.
 _SCALARS = {
-    "lowcontrast": ("angle_deg", "grid_shift_mm", "grid_angle_offset_deg", "bg_ring_mm"),
+    "lowcontrast": ("angle_deg", "grid_shift_mm", "grid_angle_offset_deg", "bg_ring_mm", "insert_orientation"),
     "linepairs": ("strip_angle_deg", "roi_size_mm", "roi_angle_offset_deg"),
     "uniformity": ("roi_size_mm",),
     "wedge": ("center_x_mm", "y_top_mm", "y_bottom_mm", "boundaries_y_mm",
@@ -287,6 +287,10 @@ def apply_layout(ctx, geometry: dict, layout: dict) -> tuple[dict, dict]:
         if test == "lowcontrast" and "grid_angle_offset_deg" not in keep:
             # Older layouts used one angle for both the outline and disc grid.
             node["grid_angle_offset_deg"] = 0.0
+        if test == "lowcontrast" and "insert_orientation" not in keep:
+            # Saved ROI identities win. Do not attach a new scan's inferred
+            # reflection to legacy positions saved without orientation evidence.
+            node["insert_orientation"] = {'flip_x':False,'flip_y':False,'source':'legacy'}
         for k, v in keep.items():
             node[k] = v
         node["from_profile"] = True

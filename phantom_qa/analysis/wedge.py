@@ -98,7 +98,17 @@ def _position_frame(ctx):
         normals = np.vstack([normals, np.tile([0, 1], (len(xs), 1))])
         sections = np.r_[sections, np.full(len(xs), 4 + k)]
     matcher = OutlineMatcher(ctx, template, points, normals, sections, "edge")
-    return matcher.fit(template, required_sections=5)
+    forward = matcher.fit(template, required_sections=5)
+    reversed_template = {**template, 'angle_deg': template['angle_deg'] + 180.}
+    reverse = matcher.fit(reversed_template, required_sections=5)
+    # The step boundary spacing, not monotonicity or measured means, chooses
+    # the local direction. A symmetric/ambiguous frame keeps the original pose.
+    if (reverse['accepted'] and (not forward['accepted'] or
+            reverse['score'] > forward['score'] + .15)):
+        reverse['insert_reversed'] = True
+        return reverse
+    forward['insert_reversed'] = False
+    return forward
 
 
 def _full_scale(ctx: Ctx) -> float:

@@ -63,31 +63,27 @@ or the normal pytest suite.
 
 ## 2. Phantom detection and registration — `registration.py`
 
-1. **Coarse detection.** The image is downsampled 8×, Otsu-thresholded, and the
-   largest bright connected component taken as the phantom face. Burned-in text
-   and foreign objects form smaller components and are ignored.
-2. **Angle.** A rotating-calipers search (0.5° coarse, 0.02° fine) finds the
-   rotation that minimises the component's bounding-box area.
-3. **Sub-pixel edges.** For each side, 25 profiles are sampled perpendicular to
-   the coarse edge. The edge point is the extremum of the smoothed profile
-   derivative with parabolic refinement. A total-least-squares line is fitted per
-   side with two rounds of MAD outlier rejection, which removes edge tabs, screws
-   and touching objects. Corners are the line intersections.
-4. **Orientation.** Eight candidate corner assignments (four rotations ×
-   mirror) are fitted as affine transforms and scored on image content: wedge
-   means must decrease from step 1 to 7, the line-pair strip must show high
-   local standard deviation, and the low-contrast block must be bright and
-   smooth. All candidate scores are stored.
-5. **Verification landmarks.** The central long ruler line of each side is
-   located along the side normal near its predicted position. The RMS prediction
-   error in millimetres is reported as `residual_rms_mm`. These landmarks verify
-   the fit; they do not drive it.
-6. **Manual fallback.** Four user-clicked corners replace steps 1–3. Orientation
-   scoring still resolves the assignment, so click order does not matter.
+Version 1.3.0 uses a centre-seeded square model rather than the largest filled
+bright component. It searches multiple scales and rotations, using DICOM spacing
+only as an optional prior and enclosed dark/bright regions as extra hypotheses.
+Four-sided boundary support selects candidates before full-resolution profile
+refinement. Detector-edge components are not filled into phantom masks.
 
-The transform is a full six-degree-of-freedom affine (mm → px). `mirrored` is
-derived from the determinant sign, accounting for the y-down image frame;
-rotation from the image of the +x axis.
+Eight rotation/reflection assignments are scored with structural outlines:
+uniformity squares, low-contrast perimeter, wedge frame and line-pair corridor.
+Automatic fits use a uniform-scale similarity transform; insufficient support
+or ambiguous orientation requests manual corners. Manual corner fits retain
+affine support. Existing stored transforms retain their interpretation.
+
+Ruler landmarks independently verify the accepted fit; their RMS disagreement
+is reported, not minimized by changing the measured QA quantities. Initial ROIs
+share the accepted transform and retain bounded local group refinements.
+Individual low-contrast insert reflections and structurally reversed wedges are
+handled separately from a whole-phantom face-down placement. Measurement
+formulas and numerical QA thresholds are unchanged.
+
+See [REGISTRATION_MODEL.md](REGISTRATION_MODEL.md) for local flip evidence,
+manual correction controls, compatibility and regression coverage.
 
 ## 3. Scale chain — `analysis/geometry.py`
 
