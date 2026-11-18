@@ -1516,6 +1516,7 @@ function stageB(c) {
   }
 
   c.innerHTML = `<h2>Stage B — Pattern identification</h2>
+    <div class="stage-return"><button class="secondary" id="btn-back-a">Go back to registration</button></div>
     <p class="hint">Look at the image, not at this panel: every pattern found is
     outlined and labelled there. Check that each outline is on the right object
     with the right label — zoom in. A pattern found end-for-end, or a group
@@ -1525,7 +1526,6 @@ function stageB(c) {
       `<table><tr><th>pattern</th><th>detection</th><th></th></tr>
        ${rows.join("")}</table>`)}
     <button class="primary" id="btn-confirm-b">Verify measuring points →</button>
-    <button class="secondary" id="btn-back-a">Back to registration</button>
     <p class="hint">Nothing needs fixing here. Patterns that were not found, or
     were labelled wrongly, are corrected in the next step by dragging and
     rotating their measuring areas.</p>`;
@@ -1604,6 +1604,7 @@ function stageC(c) {
   const lcAng = lcOk ? Number(lc.angle_deg || 0) : 0;
   S.lcAngleCommitted = lcAng;
   c.innerHTML = `<h2>Stage C — Measuring points</h2>
+    <div class="stage-return"><button class="secondary" id="btn-back-b">Go back to patterns</button></div>
     ${layoutBar()}
     <p class="hint">Click an ROI center dot to inspect μ/σ; drag it to adjust.
     Adjusted ROIs turn orange and are recorded in the audit trail. Low-contrast:
@@ -1649,8 +1650,7 @@ function stageC(c) {
     Field edges describe the collimation of this exposure, so they are never
     stored as part of the phantom's layout.</p>
     <div>${fieldBtns}</div>
-    <button class="primary" id="btn-confirm-c">Measuring points confirmed ✓</button>
-    <button class="secondary" id="btn-back-b">Back to patterns</button>`;
+    <button class="primary" id="btn-confirm-c">Measuring points confirmed ✓</button>`;
 
   if (!locked) {
     refreshHistoryButtons();
@@ -1804,8 +1804,10 @@ async function submitFieldEdge(natPoint, side = S.fieldEdgeSide) {
 async function stageD(c) {
   const aid = S.aid;
   c.innerHTML = `<h2>Stage D — Dimension verification</h2>
+    <div class="stage-return"><button class="secondary" id="btn-back-c">Go back to measuring points</button></div>
     <p>SID <input type="number" id="sid-input" value="${S.sid}" step="10"> mm</p>
     <p class="hint">Computing dimensions…</p>`;
+  $("#btn-back-c").addEventListener("click", () => setStage("C"));
   let gr;
   try {
     const r = await postJSON(`api/analyses/${S.aid}/compute_preview`,
@@ -1814,7 +1816,8 @@ async function stageD(c) {
     if (S.aid !== aid || S.stage !== "D") return;
     S.dimPreview = gr;
   } catch (e) {
-    c.innerHTML += `<p style="color:var(--fail)">${e.message}</p>`;
+    if (S.aid !== aid || S.stage !== "D") return;
+    c.insertAdjacentHTML("beforeend", `<p style="color:var(--fail)">${html_escape(e.message)}</p>`);
     return;
   }
   const d = gr.dimensions || {};
@@ -1844,11 +1847,12 @@ async function stageD(c) {
   const spac = sc.dicom_spacings_mm_per_px || {};
   const fieldRows = Object.entries(gr.field_alignment || {}).map(([side, f]) =>
     f.detected ?
-    `<tr><td>${side}</td><td class="num">${fmt(f.deviation_from_central_line_mm, 1)}</td>
+    `<tr><td>${side}</td><td class="num">${fmt(f.deviation_from_reference_mm ?? f.deviation_from_central_line_mm, 1)}</td>
      <td class="num">${fmt(f.pct_of_sid, 2)} %</td><td>${chip(f.status)}</td></tr>` :
     `<tr><td>${side}</td><td colspan="3" class="hint">not measured — ${f.reason || "no edge found"}</td></tr>`).join("");
   const worstDim = d.dev_from_nominal_pct;
   c.innerHTML = `<h2>Stage D — Dimension verification</h2>
+    <div class="stage-return"><button class="secondary" id="btn-back-c">Go back to measuring points</button></div>
     <p class="hint">This step confirms the millimetre scale before anything is
     measured with it. If both lines below are green you can go straight on.</p>
     <div class="card"><div class="kv">
@@ -1894,12 +1898,11 @@ async function stageD(c) {
          <tr><td>implied magnification vs detector plane</td>
              <td class="num">${fmt(sc.implied_magnification_vs_detector_plane, 4)}</td></tr>
        </table>
-       <h3>X-ray field vs central lines ${chip(gr.field_status)}</h3>
+       <h3>X-ray field vs ${fieldReference(gr)} ${chip(gr.field_status)}</h3>
        <table><tr><th>side</th><th>deviation [mm]</th><th>% of SID</th><th></th></tr>
        ${fieldRows}</table>`)}
 
-    <button class="primary" id="btn-confirm-d">Dimensions verified ✓ — run analysis</button>
-    <button class="secondary" id="btn-back-c">Back to measuring points</button>`;
+    <button class="primary" id="btn-confirm-d">Dimensions verified ✓ — run analysis</button>`;
   $("#btn-recompute-d").addEventListener("click", () => {
     S.sid = +$("#sid-input").value || 1000;
     stageD(c);
@@ -1914,6 +1917,11 @@ async function stageD(c) {
 
 
 /* The field-alignment headline: the worst side, or why there is none. */
+function fieldReference(gr) {
+  return gr.field_reference_width_mm != null
+    ? `centered ${fmt(gr.field_reference_width_mm, 0)} mm field boundary` : "central lines";
+}
+
 function fieldSummary(gr) {
   const sides = Object.entries(gr.field_alignment || {});
   const measured = sides.filter(([, f]) => f.detected);
@@ -1924,7 +1932,7 @@ function fieldSummary(gr) {
     if (Math.abs(s[1].pct_of_sid) > Math.abs(worst[1].pct_of_sid)) worst = s;
   });
   return `worst side ${worst[0]}, `
-       + `${fmt(worst[1].deviation_from_central_line_mm, 1)} mm `
+       + `${fmt(worst[1].deviation_from_reference_mm ?? worst[1].deviation_from_central_line_mm, 1)} mm from ${fieldReference(gr)} `
        + `(${fmt(worst[1].pct_of_sid, 2)} % of SID)`
        + (measured.length < sides.length
           ? ` · ${sides.length - measured.length} side(s) not measurable` : "");
@@ -1944,7 +1952,10 @@ function reasonsBlock(reasons, status) {
 /* ---- Stage E ---- */
 async function stageE(c) {
   const aid = S.aid, analysisRevision = S.analysisRequest;
-  c.innerHTML = `<h2>Stage E — Analysis</h2><p class="hint">${S.useSavedResults || signedOff() ? "Loading saved results…" : "Computing…"}</p>`;
+  c.innerHTML = `<h2>Stage E — Analysis</h2>
+    <div class="stage-return"><button class="secondary" id="btn-back-d">Go back to dimensions</button></div>
+    <p class="hint">${S.useSavedResults || signedOff() ? "Loading saved results…" : "Computing…"}</p>`;
+  $("#btn-back-d").addEventListener("click", () => setStage("D"));
   let r;
   try {
     if (S.useSavedResults || signedOff()) {
@@ -1962,8 +1973,8 @@ async function stageE(c) {
   } catch (e) {
     if (S.aid !== aid || S.stage !== "E" || analysisRevision !== S.analysisRequest) return;
     c.innerHTML = `<h2>Stage E — Analysis</h2>
-      <p style="color:var(--fail)">${html_escape(e.message)}</p>
-      <button class="secondary" id="btn-back-d">Back to dimensions</button>`;
+      <div class="stage-return"><button class="secondary" id="btn-back-d">Go back to dimensions</button></div>
+      <p style="color:var(--fail)">${html_escape(e.message)}</p>`;
     $("#btn-back-d").addEventListener("click", () => setStage("D"));
     return;
   }
@@ -1976,10 +1987,29 @@ async function stageE(c) {
   const cards = [];
   const card = (key, title, status, headline, html) => {
     const result = res[key === "alignment" ? "geometry" : key] || {};
+    const geometryCheck = key === "geometry" || key === "alignment";
+    if (geometryCheck && status === "pass") {
+      const d = result.dimensions || {};
+      const sides = Object.values(result.field_alignment || {}).filter(row => row?.detected === true);
+      const deviation = result.field_reference_width_mm != null
+        ? "deviation_from_reference_mm" : "deviation_from_central_line_mm";
+      const valid = key === "geometry"
+        ? Number.isFinite(d.mean_side_mm) && Number.isFinite(d.dev_from_nominal_pct)
+        : sides.length > 0 && sides.every(row => row.status === "pass"
+          && Number.isFinite(row.pct_of_sid) && Number.isFinite(row[deviation]));
+      if (!valid || result.error) status = "error";
+    }
     if (result.status === "error" && result.analysis_issues) {
-      status = "error";
-      headline = "analysis incomplete";
-      html += reasonsBlock(result.analysis_issues.map(i => `${i.path}: ${i.detail}`), "error");
+      const details = result.analysis_issues.map(i => `${i.path}: ${i.detail}`);
+      if (geometryCheck && ["pass", "warn", "fail"].includes(status)) {
+        html += advanced("Technical warnings", reasonsBlock(details, "warning"));
+      } else {
+        status = "error";
+        headline = "analysis incomplete";
+        html = reasonsBlock(result.analysis_summary || details, "error")
+          + advanced("Measurement detail", html)
+          + advanced("Technical details", reasonsBlock(details, "error"));
+      }
     }
     cards.push({ key, title, status, headline, html });
   };
@@ -2140,6 +2170,7 @@ async function stageE(c) {
     cd.status !== "pass")).join("");
 
   c.innerHTML = `<h2>Stage E — Analysis results</h2>
+    <div class="stage-return"><button class="secondary" id="btn-back-d">Go back to dimensions</button></div>
     <div class="card"><h3>Overall ${chip(r.overall)}</h3>
       <table><tr><th>test</th><th>result</th><th>measured</th></tr>
       ${summaryRows}</table></div>
@@ -2151,8 +2182,7 @@ async function stageE(c) {
     <h3>To Do</h3>
     <div id="analysis-todo" class="analysis-tasks" data-analysis-tasks="${S.aid}">Loading guidance…</div>
     <p class="hint">Results are saved automatically.</p>
-    <button class="primary" id="btn-confirm-e">Advanced settings</button>
-    <button class="secondary" id="btn-back-d">Back to dimensions</button>`;
+    <button class="primary" id="btn-confirm-e">Advanced settings</button>`;
 
   drawWedgeChart(res);
   drawLcChart(res);
@@ -2238,7 +2268,7 @@ function stageF(c) {
     printable report.</p>
     <button class="secondary" id="btn-validate-f">Set validation…</button>`;
   c.innerHTML = `<h2>Stage F — Advanced settings</h2>
-    <div class="stage-return"><button class="secondary" id="btn-back-e">Back to analysis results (E)</button></div>
+    <div class="stage-return"><button class="secondary" id="btn-back-e">Go back to analysis results (E)</button></div>
     <p>Analysis <b>${S.aid}</b> stored with full audit trail.</p>
     ${identWarn}
     ${valBlock}

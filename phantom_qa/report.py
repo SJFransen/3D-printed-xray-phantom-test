@@ -196,16 +196,22 @@ def _section(title, status, body, note=""):
 
 
 def _geometry_status(geometry, key):
-    return "error" if geometry.get("status") == "error" else geometry.get(key, "n/a")
+    from .analysis.assessment import geometry_checks
+    check_id = "geometry" if key == "dimension_status" else "alignment"
+    return next(check["status"] for check in geometry_checks(geometry) if check["id"] == check_id)
 
 
 def _analysis_notes(result):
     issues = result.get("analysis_issues") or []
     if not issues:
         return ""
+    from .analysis.assessment import summarize_issues
+    summary = result.get("analysis_summary") or summarize_issues(issues)
     return '<div class="warnbox"><b>Analysis incomplete</b><ul>' + ''.join(
+        '<li>' + html.escape(text) + '</li>' for text in summary
+    ) + '</ul><details><summary>Technical details</summary><ul>' + ''.join(
         '<li>' + html.escape(f"{issue.get('path', '')}: {issue.get('detail', '')}") + '</li>'
-        for issue in issues) + '</ul></div>'
+        for issue in issues) + '</ul></details></div>'
 
 
 def _geometry_section(res, bmap):
@@ -243,13 +249,15 @@ def _geometry_section(res, bmap):
         for side, r in (g.get("rulers") or {}).items())
     fields = "".join(
         (f"<tr><td>{side}</td><td class='num'>"
-         f"{_num(f.get('deviation_from_central_line_mm'), 1)}</td>"
+         f"{_num(f.get('deviation_from_reference_mm', f.get('deviation_from_central_line_mm')), 1)}</td>"
          f"<td class='num'>{_num(f.get('pct_of_sid'), 2)}%</td>"
          f"<td>{_chip(f.get('status'))}</td></tr>") if f.get("detected") else
         (f"<tr><td>{side}</td><td colspan='3' class='muted'>not measurable — "
          f"{html.escape(str(f.get('reason', '')))}</td></tr>")
         for side, f in (g.get("field_alignment") or {}).items())
 
+    field_reference = (f"centered {_num(g['field_reference_width_mm'], 0)} mm field boundary"
+                       if g.get("field_reference_width_mm") is not None else "central long lines")
     body = f"""
 <h3>Corner-mark dimensions</h3>
 <table><tr><th>dimension</th><th>value</th><th>unit</th><th>baseline</th><th>Δ</th></tr>
@@ -269,7 +277,7 @@ def _geometry_section(res, bmap):
 <tr><td>implied magnification vs detector plane</td>
     <td class='num'>{_num(sc.get('implied_magnification_vs_detector_plane'), 4)}</td><td>×</td></tr>
 </table>
-<h3>X-ray field vs central long lines {_chip(_geometry_status(g, 'field_status'))}</h3>
+<h3>X-ray field vs {field_reference} {_chip(_geometry_status(g, 'field_status'))}</h3>
 <table><tr><th>side</th><th>deviation [mm]</th><th>% of SID</th><th></th></tr>{fields}</table>"""
     return _section("Geometry & dimensions", _geometry_status(g, "dimension_status"),
                     _analysis_notes(g) + body)

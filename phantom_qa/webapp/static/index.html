@@ -37,6 +37,7 @@
       <section class="auto-card auto-phantom" aria-label="Phantom results">
         <label id="auto-scan-choice" class="hidden">Scan <select id="auto-scan-select"></select></label>
         <ul id="auto-feature-status" class="auto-feature-status" aria-label="Feature results"></ul>
+        <p id="auto-measurement-warning" class="hint hidden"></p>
         <div id="auto-viewer" class="auto-viewer" title="Scroll to zoom; drag to move the image">
           <div id="auto-viewer-layer">
             <img id="auto-image" alt="Phantom scan with read-only measurement regions" draggable="false">
@@ -252,9 +253,11 @@
 
 <template id="scan-upload-template">
   <h2>New analysis</h2>
-  <p class="hint">DICOM file (preferred), zipped DICOM CD export, or a plain image.</p>
   <h3>1 · Choose the scan file</h3>
-  <div class="drop-zone" id="drop" role="button" tabindex="0">Drop file here or click to choose</div>
+  <div class="drop-zone" id="drop" role="button" tabindex="0">
+    <div>Drop file here or click to choose</div>
+    <p class="hint">DICOM file (preferred), zipped DICOM CD export, or a plain image.</p>
+  </div>
   <input id="file-input" name="file" type="file" class="hidden">
   <div id="file-chosen" class="chosen hidden"></div>
   <h3>2 · Identify this scan</h3>

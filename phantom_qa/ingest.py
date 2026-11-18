@@ -60,6 +60,7 @@ def _extract_dicom_meta(ds) -> dict:
         "ImagerPixelSpacing", "PixelSpacing", "SpatialResolution",
         "Rows", "Columns", "BitsAllocated", "BitsStored", "HighBit",
         "PixelRepresentation", "PhotometricInterpretation",
+        "PixelPaddingValue", "PixelPaddingRangeLimit",
         "RescaleSlope", "RescaleIntercept", "RescaleType",
         "WindowCenter", "WindowWidth", "PresentationLUTShape",
         "AcquisitionDeviceProcessingDescription", "ImageType",
@@ -119,14 +120,23 @@ def load_dicom_bytes(data: bytes, source_name: str) -> ScanData:
     slope = float(getattr(ds, "RescaleSlope", 1) or 1)
     intercept = float(getattr(ds, "RescaleIntercept", 0) or 0)
     arr = arr * slope + intercept
+    padding = None
+    if hasattr(ds, "PixelPaddingValue"):
+        padding = np.asarray([float(ds.PixelPaddingValue),
+                              float(getattr(ds, "PixelPaddingRangeLimit", ds.PixelPaddingValue))])
+        padding = padding * slope + intercept
 
     photometric = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2"))
     if photometric == "MONOCHROME1":
+        if padding is not None:
+            padding = float(arr.max()) - padding
         arr = float(arr.max()) - arr
 
     meta = _extract_dicom_meta(ds)
     meta["TransferSyntax"] = ds.file_meta.TransferSyntaxUID.name
     meta["_polarity"] = "attenuation-high"
+    if padding is not None:
+        meta["_padding_range_normalized"] = sorted(padding.tolist())
 
     spacing = {}
     if hasattr(ds, "ImagerPixelSpacing"):

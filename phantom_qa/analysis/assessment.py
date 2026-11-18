@@ -209,7 +209,9 @@ def _assess_features(geometry, results, pdef, tests):
                 alignment = (result.get("field_alignment") or {}).get(side) or {}
                 if alignment.get("detected") is not True or "status" not in alignment:
                     issue("missing_result", f"field_alignment.{side}", "Field alignment could not be measured")
-                numeric(alignment, ["pct_of_sid", "deviation_from_central_line_mm"], f"field_alignment.{side}")
+                deviation = ("deviation_from_reference_mm" if result.get("field_reference_width_mm") is not None
+                             else "deviation_from_central_line_mm")
+                numeric(alignment, ["pct_of_sid", deviation], f"field_alignment.{side}")
         else:
             if "status" not in result:
                 issue("missing_result", "status", "Required group verdict is missing")
@@ -280,6 +282,65 @@ def _assess_features(geometry, results, pdef, tests):
     return features
 
 
+def geometry_checks(result):
+    """Independent QA verdicts; reliability diagnostics do not replace a verdict."""
+    result = result if isinstance(result, dict) else {}
+    dimensions = result.get("dimensions")
+    dimensions = dimensions if isinstance(dimensions, dict) else {}
+    dimension_valid = all(_finite(dimensions.get(key)) for key in ("mean_side_mm", "dev_from_nominal_pct"))
+    alignment = result.get("field_alignment")
+    alignment = alignment if isinstance(alignment, dict) else {}
+    alignment = [row for row in alignment.values()
+                 if isinstance(row, dict) and row.get("detected") is True]
+    deviation = "deviation_from_reference_mm" if result.get("field_reference_width_mm") is not None else "deviation_from_central_line_mm"
+    field_valid = bool(alignment) and all(_finite(row.get("pct_of_sid")) and _finite(row.get(deviation))
+                                        and row.get("status") == "pass" for row in alignment)
+    checks = []
+    for key, label, status, valid in (
+        ("geometry", "Geometry", result.get("dimension_status", "n/a"), dimension_valid),
+        ("alignment", "X-ray field alignment", result.get("field_status", "n/a"), field_valid),
+    ):
+        if status == "pass" and (not valid or result.get("error")):
+            status = "error"
+        checks.append({"id": key, "label": label, "status": status,
+                       "state": "pass" if status == "pass" else "attention"})
+    return checks
+
+
+def summarize_issues(issues):
+    """Present root causes once while retaining every raw issue for inspection."""
+    primary = {}
+    for side in SIDES:
+        for group in ("field_edges", "rulers"):
+            path = f"{group}.{side}"
+            root = next((i for i in issues if i.get("path") == path), None)
+            if root:
+                primary[path] = root
+        alignment = f"field_alignment.{side}"
+        if f"field_edges.{side}" not in primary:
+            root = next((i for i in issues if i.get("path") == alignment), None)
+            if root:
+                primary[alignment] = root
+    summary = []
+    for issue in issues:
+        path = issue.get("path", "")
+        if path == "results.field_status" and any(p.startswith(("field_edges.", "field_alignment.")) for p in primary):
+            continue
+        if any(path.startswith(root + ".") for root in primary):
+            continue
+        if path.startswith("field_alignment.") and f"field_edges.{path.split('.')[1]}" in primary:
+            continue
+        parts = path.split(".")
+        labels = {"field_edges": "field edge", "field_alignment": "field alignment", "rulers": "ruler"}
+        label = (f"{parts[1].capitalize()} {labels[parts[0]]}"
+                 if len(parts) == 2 and parts[0] in labels else
+                 "Measurement scale" if path == "scale" else path)
+        text = f"{label}: {issue.get('detail', '')}"
+        if text not in summary:
+            summary.append(text)
+    return summary
+
+
 def evaluate_results(geometry, results, pdef, tests=TESTS):
     """Shared, idempotent result checks for Analyze, Auto Analyze and reanalysis.
 
@@ -298,6 +359,7 @@ def evaluate_results(geometry, results, pdef, tests=TESTS):
         technical = [i for i in feature["issues"] if i["kind"] != "quality_attention"]
         if technical:
             node["analysis_issues"] = technical
+            node["analysis_summary"] = summarize_issues(technical)
             reasons = node.setdefault("reasons", [])
             for item in technical:
                 detail = f"{item['path']}: {item['detail']}"

@@ -51,6 +51,35 @@ def test_auto_only_entry_and_return_to_same_saved_record(browser_page, mod):
     assert not errors
 
 
+def test_stage_back_buttons_precede_content_and_keep_their_destination(browser_page, passing):
+    page, errors = browser_page
+    for ruler in passing[0]["geometry"]["rulers"].values():
+        ruler["line_offsets_mm"] = [10, 15, 20, 25, 30]
+    send_scan(page)
+    page.locator("#auto-open-analyze").click()
+    page.locator("#btn-confirm-e").click()
+    preview = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
+    preview.mkdir(exist_ok=True)
+    for stage, previous in (("F", "E"), ("E", "D"), ("D", "C"), ("C", "B"), ("B", "A")):
+        if stage == "D":
+            page.locator("#btn-confirm-d").wait_for(state="visible")
+        back = page.locator("#btn-back-" + previous.lower())
+        back.wait_for(state="visible")
+        assert back.count() == 1
+        assert back.inner_text().startswith("Go back to")
+        assert back.evaluate("node => node.closest('.stage-return').previousElementSibling.tagName") == "H2"
+        if stage == "E":
+            for width in (1280, 360):
+                page.set_viewport_size({"width": width, "height": 900})
+                back.scroll_into_view_if_needed()
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                page.screenshot(path=str(preview / f"small-fixes-analyze-{width}.png"), full_page=True)
+            page.set_viewport_size({"width": 1280, "height": 1000})
+        back.click()
+        page.wait_for_function("stage => S.stage === stage", arg=previous)
+    assert not errors
+
+
 @pytest.mark.parametrize("origin", ["auto", "analyze"])
 def test_new_scan_closes_both_interfaces_and_next_scan_is_independent(browser_page, mod, origin):
     page, errors = browser_page

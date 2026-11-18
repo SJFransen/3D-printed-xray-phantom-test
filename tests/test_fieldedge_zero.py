@@ -58,14 +58,12 @@ class ZeroFieldEdgeTests(unittest.TestCase):
     def test_edge_near_detector_border_needs_no_external_margin(self):
         self.check_sides(zero_field(offset=8, margin=10), 8)
 
-    def test_real_zero_pixels_at_last_image_column_are_detected(self):
+    def test_last_column_alone_does_not_establish_a_boundary(self):
         ctx = zero_field()
         ctx.pixels[:] = 2400
         ctx.pixels[:, -1] = 0
         field = geometry._field_edge(ctx, "right")
-        self.assertTrue(field["detected"], field)
-        self.assertEqual(field["method"], "first_zero")
-        self.assertEqual(field["edge_pt_px"][0], ctx.pixels.shape[1] - 1)
+        self.assertFalse(field["detected"], field)
 
     def test_walk_uses_actual_blue_probe_line(self):
         ctx = zero_field()

@@ -11,6 +11,8 @@ final numbers are anchored to the printed 5 mm pitch, not to metadata.
 
 from __future__ import annotations
 
+from itertools import combinations
+
 import numpy as np
 from scipy import ndimage
 
@@ -27,6 +29,29 @@ _SIDE_GEOM = {
     "bottom": ((0, -1), (0, 1)),
     "left": ((-1, 0), (1, 0)),
 }
+
+
+def _ruler_pattern(offsets, first=10.0, pitch=5.0, count=6):
+    """Match a complete ruler grid; unrelated bright peaks cannot replace marks."""
+    offsets = np.sort(np.asarray(offsets, float))
+    best, best_score = None, np.inf
+    for origin in offsets[np.abs(offsets - first) <= 4.0]:
+        for last in offsets[offsets > origin]:
+            for steps in range(1, count):
+                trial_pitch = (last - origin) / steps
+                if not .85 * pitch <= trial_pitch <= 1.15 * pitch:
+                    continue
+                expected = origin + np.arange(count) * trial_pitch
+                indices = np.abs(offsets[:, None] - expected).argmin(axis=0)
+                selected = offsets[indices]
+                if len(set(indices)) != count or np.max(np.abs(selected - expected)) > .9:
+                    continue
+                fit = np.polyfit(np.arange(count), selected, 1)
+                rms = float(np.sqrt(np.mean((selected - np.polyval(fit, np.arange(count))) ** 2)))
+                score = rms + .1 * abs(fit[0] - pitch) + .02 * abs(selected[0] - first)
+                if score < best_score:
+                    best, best_score = selected.tolist(), score
+    return best
 
 
 def _ruler_probe(ctx: Ctx, side: str, probe_len_mm: float = 42.0):
@@ -55,17 +80,18 @@ def _ruler_probe(ctx: Ctx, side: str, probe_len_mm: float = 42.0):
     if abs(edge_mm) > 2.5:                    # implausible -> keep nominal edge
         edge_mm = 0.0
     pos_mm = pos_mm - edge_mm                 # 0 = locally detected edge
-    pk = find_peaks_1d(vals, min_distance=int(3.0 / (pos_mm[1] - pos_mm[0])),
-                       threshold_rel=0.25)
-    if len(pk) < 6:
+    pk = find_peaks_1d(vals, min_distance=max(1, int(1.5 / (pos_mm[1] - pos_mm[0]))),
+                       threshold_rel=0.15)
+    candidates = [float(np.interp(centroid_peak(vals, j, 4), np.arange(len(pos_mm)), pos_mm))
+                  for j in pk]
+    definition = ctx.pdef.rulers[side]
+    offsets = _ruler_pattern(candidates, definition["first_line_from_edge_mm"],
+                            definition["pitch_mm"], definition.get("n_lines", 6))
+    if offsets is None:
         return {"side": side, "detected": False,
                 "probe": segment(ctx, p0_mm, p1_mm, f"ruler/{side}/probe"),
                 "line_offsets_mm": [], "profile": {
                     "pos_mm": pos_mm.tolist(), "value": np.asarray(vals).tolist()}}
-    strongest = sorted(sorted(pk, key=lambda j: -vals[j])[:6])
-    offsets = [float(np.interp(centroid_peak(vals, j, 4),
-                               np.arange(len(pos_mm)), pos_mm))
-               for j in strongest]
     return {"side": side, "detected": True,
             "probe": segment(ctx, p0_mm, p1_mm, f"ruler/{side}/probe"),
             "line_offsets_mm": offsets,
@@ -73,14 +99,22 @@ def _ruler_probe(ctx: Ctx, side: str, probe_len_mm: float = 42.0):
                         "value": np.asarray(vals).tolist()}}
 
 
+def _usable_pixels(ctx, values):
+    usable = np.isfinite(values)
+    padding = ((ctx.params or {}).get("scan_meta") or {}).get("_padding_range_normalized")
+    if padding is not None:
+        usable &= (values < padding[0]) | (values > padding[1])
+    return usable
+
+
 def _zero_field_edge(ctx: Ctx, side: str, ruler=None):
     """Walk outward along the blue ruler probe to the first zero boundary.
 
     Start at the probe's inner end. If collimation already covers that point,
     backtrack toward the phantom centre to exposed pixels before walking out.
-    Up to three consecutive zero samples confirm the boundary, excluding single
-    dead pixels. At the image border the remaining real samples suffice; no
-    synthetic padding is used.
+    At least three zero samples spanning 1.5 mm confirm a candidate. Padding
+    and unsupported image-border samples cannot establish a boundary; agreement
+    across nearby rays is checked by the caller.
     """
     half = ctx.pdef.side_mm / 2
     (ex, ey), (nx, ny) = _SIDE_GEOM[side]
@@ -115,13 +149,25 @@ def _zero_field_edge(ctx: Ctx, side: str, ruler=None):
         if not exposed.size:
             return None
         start = int(exposed[-1])
-    zero = values <= 0
-    runs = np.flatnonzero(zero & np.r_[zero[1:], True] & np.r_[zero[2:], True, True])
-    runs = runs[runs >= start]
+    usable = _usable_pixels(ctx, values)
+    # Padding ends the observable ray; it is never evidence of collimation.
+    invalid = np.flatnonzero(~usable)
+    stop_index = int(invalid[0]) if invalid.size else len(values)
+    zero = (values <= 0) & usable
+    run_length = max(3, int(np.ceil(1.5 * ppm)))
+    if len(zero) < run_length + 3:
+        return None
+    runs = np.flatnonzero(np.convolve(zero.astype(int), np.ones(run_length, int), "valid") == run_length)
+    runs = runs[(runs >= max(start, 3)) & (runs + run_length <= stop_index)]
+    runs = np.asarray([i for i in runs if np.all(values[i-3:i] > 0)], int)
     if not runs.size:
         return None
     index = int(runs[0])
     point_mm = ctx.T.px_to_mm(points[index])
+    if abs(float(np.dot(point_mm - edge_mm, outward))) < 3.0:
+        # A drop to zero exactly at the phantom face may be exposed background,
+        # rather than collimation. The intensity alone cannot distinguish them.
+        return None
     return {"side": side, "detected": True, "manual": False,
             "method": "first_zero", "edge_pt_px": points[index].tolist(),
             "offset_from_edge_mm": float(np.dot(point_mm - edge_mm, outward)),
@@ -130,13 +176,66 @@ def _zero_field_edge(ctx: Ctx, side: str, ruler=None):
                              ctx.T.px_to_mm(points[-1]), f"field/{side}")}
 
 
-def _field_edge(ctx: Ctx, side: str, start_mm: float = 8.0, ruler=None):
-    """Prefer the first zero along the ruler; retain nonzero step detection."""
-    zero = _zero_field_edge(ctx, side, ruler)
-    return zero if zero is not None else _field_edge_step(ctx, side, start_mm)
+def _field_edge(ctx: Ctx, side: str, start_mm: float = 2.0, ruler=None):
+    """Require a spatially supported boundary on at least three of five rays."""
+    (ex, ey), inward = _SIDE_GEOM[side]
+    outward = -np.asarray(inward, float)
+    tangent = np.array([-outward[1], outward[0]])
+    edge = np.array([ex, ey]) * ctx.pdef.side_mm / 2
+    inner = np.asarray((ruler or {}).get("probe", {}).get("p1_mm", edge - outward * 42), float)
+    values = ctx.pixels[_usable_pixels(ctx, ctx.pixels)]
+    image_range = float(np.ptp(np.percentile(values, [1, 99]))) if values.size else 0.
+    candidates, failures = [], []
+    for shift in (0., -6., -3., 3., 6.):
+        point = inner + tangent * shift
+        proposal = _zero_field_edge(ctx, side, {"probe": {"p1_mm": point.tolist()}})
+        if proposal is None:
+            proposal = _field_edge_step(ctx, side, start_mm, float(np.dot(point, tangent)), image_range)
+        if proposal.get("detected"):
+            candidates.append({**proposal, "profile_offset_mm": shift})
+        else:
+            failures.append(proposal)
+    if len(candidates) >= 3:
+        offsets = np.array([p["offset_from_edge_mm"] for p in candidates])
+        positions = np.array([p["profile_offset_mm"] for p in candidates])
+        models = [(0., value) for value in offsets]
+        for i in range(len(candidates)):
+            for j in range(i):
+                slope = (offsets[i] - offsets[j]) / (positions[i] - positions[j])
+                if abs(slope) <= 1.0:
+                    models.append((slope, offsets[i] - slope * positions[i]))
+        consensus = [np.flatnonzero(np.abs(offsets - np.polyval(model, positions)) <= 1.)
+                     for model in models]
+        cluster = max(consensus, key=len)
+        winners = {tuple(group) for group in consensus if len(group) == len(cluster)}
+        lines = [np.polyval(np.polyfit(positions[list(group)], offsets[list(group)], 1), [-6, 6])
+                 for group in winners if len(group) >= 3]
+        ambiguous = any(np.max(np.abs(line - lines[0])) > 2 for line in lines[1:])
+        if len(cluster) >= 3 and len(cluster) > len(candidates) / 2 and not ambiguous:
+            model = np.polyfit(positions[cluster], offsets[cluster], 1)
+            residuals = offsets[cluster] - np.polyval(model, positions[cluster])
+            # Prefer the original ruler ray when it agrees with its neighbors.
+            chosen = candidates[int(cluster[0])]
+            if chosen["profile_offset_mm"] != 0:
+                normal_offset = float(model[1])
+                point = edge + tangent * np.dot(inner, tangent) + outward * normal_offset
+                chosen = {**chosen, "edge_pt_px": ctx.T.mm_to_px(point).tolist(),
+                          "offset_from_edge_mm": normal_offset}
+            spread = float(np.ptp(residuals))
+            return {**chosen, "profile_count": 5, "agreeing_profiles": len(cluster),
+                    "edge_spread_mm": spread, "edge_slope": float(model[0]),
+                    "confidence": float(len(cluster) / 5 / (1 + spread))}
+    reason = ("Boundary candidates disagree across nearby profiles" if candidates else
+              failures[0].get("reason", "No visible field boundary"))
+    return {"side": side, "detected": False, "reason": reason,
+            "profile_count": 5, "agreeing_profiles": 0,
+            "profile_diagnostics": [{"detected": p["detected"], "reason": p.get("reason"),
+                                     "offset_from_edge_mm": p.get("offset_from_edge_mm")}
+                                    for p in candidates + failures]}
 
 
-def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 8.0):
+def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 2.0, tangent_mm: float = 0.0,
+                     image_range: float | None = None):
     """Radiation-field (collimation) edge along the side's outward normal.
 
     A collimated border is a genuine STEP: direct exposure on one side, blocked
@@ -144,8 +243,8 @@ def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 8.0):
     not. The detector therefore fits both a two-plateau step model and a single
     linear ramp, and accepts the step only when ALL of the following hold:
 
-      * the probe is long enough to see a border at all (>= 25 mm),
-      * >= 8 mm of plateau exists on both sides of the split (a "step" at the
+      * the probe is long enough to see a border at all (>= 8 mm),
+      * >= 3 mm of plateau exists on both sides of the split (a "step" at the
         very end of a short probe is an artifact of the image boundary),
       * the step model explains the profile far better than a ramp
         (SSE_step <= 0.35 * SSE_linear),
@@ -164,6 +263,7 @@ def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 8.0):
     (ex, ey), (nx, ny) = _SIDE_GEOM[side]
     edge_pt = np.array([ex * S2, ey * S2], float)
     outward = -np.array([nx, ny], float)
+    edge_pt += np.array([-outward[1], outward[0]]) * tangent_mm
 
     # probe from start_mm outside the edge to just inside the image border
     p0_mm = edge_pt + outward * start_mm
@@ -171,6 +271,8 @@ def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 8.0):
     d_px = np.asarray(T.mm_to_px(edge_pt + outward * (start_mm + 1)), float) - p0
     d_px /= np.linalg.norm(d_px)
     h, w = ctx.pixels.shape
+    if not (0 <= p0[0] <= w - 1 and 0 <= p0[1] <= h - 1):
+        return {"side": side, "detected": False, "reason": "Insufficient image at field search start"}
     tmax = np.inf
     for lim, comp, dcomp in ((w - 3, p0[0], d_px[0]), (h - 3, p0[1], d_px[1])):
         if dcomp > 1e-9:
@@ -181,28 +283,36 @@ def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 8.0):
     # perfectly "step-like" intensity change and would otherwise be reported as
     # a collimation edge.
     if np.isfinite(tmax):
-        tmax = max(tmax - 12.0 * T.px_per_mm, 0.0)
+        tmax = max(tmax, 0.0)
     probe_mm = float(tmax) * T.mm_per_px if np.isfinite(tmax) else 0.0
-    if not np.isfinite(tmax) or probe_mm < 25.0:
+    if not np.isfinite(tmax) or probe_mm < 8.0:
         return {"side": side, "detected": False,
-                "reason": f"only {probe_mm:.0f} mm of image outside the phantom "
-                          f"edge — radiation field extends beyond the detector"}
+                "reason": f"Insufficient search margin: {probe_mm:.1f} mm usable outside "
+                          "the phantom; a visible boundary with plateaus on both sides is required"}
     p1 = p0 + d_px * tmax
     p1_mm = T.px_to_mm(p1)
-    n = max(int(tmax / 2), 40)
-    ts, vals = sample_profile(ctx.pixels, p0, p1, n,
-                              avg_half_width=10 * T.px_per_mm, n_avg=21)
-    v = ndimage.gaussian_filter1d(np.asarray(vals, float), 3.0)
+    n = max(int(probe_mm / .25) + 1, 40)
+    ts, vals = sample_profile(ctx.pixels, p0, p1, n)
+    points = p0 + np.linspace(0, 1, n)[:, None] * (p1 - p0)
+    nearest = ndimage.map_coordinates(ctx.pixels, [points[:, 1], points[:, 0]], order=0)
+    invalid = np.flatnonzero(~_usable_pixels(ctx, nearest))
+    if invalid.size:
+        n = int(invalid[0])
+        vals = vals[:n]
+        probe_mm = float(ts[n-1] * T.mm_per_px) if n else 0.0
+        if probe_mm < 8.0:
+            return {"side": side, "detected": False, "reason": "Insufficient native image before padding"}
+    v = ndimage.gaussian_filter1d(np.asarray(vals, float), max(.5 / (probe_mm / n), .5))
     probe = segment(ctx, p0_mm, p1_mm, f"field/{side}")
     N = len(v)
-    mm_per_sample = probe_mm / N
+    mm_per_sample = probe_mm / (N - 1)
 
     def reject(reason):
         return {"side": side, "detected": False, "probe": probe,
                 "reason": reason, "probe_len_mm": probe_mm}
 
-    # keep >= 8 mm of plateau on each side of a candidate split
-    guard = max(int(8.0 / mm_per_sample), 4)
+    # Keep >= 3 mm of plateau on each side, including the 11 mm reference edge.
+    guard = max(int(3.0 / mm_per_sample), 4)
     if N - 2 * guard < 4:
         return reject("probe too short to separate two plateaus")
 
@@ -233,8 +343,12 @@ def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 8.0):
     m1 = float(np.mean(v[:best_i]))
     m2 = float(np.mean(v[best_i:]))
     step = abs(m2 - m1)
-    noise = float(np.std(np.diff(v))) * 3 + 1e-9
-    img_range = float(np.percentile(ctx.pixels, 99) - np.percentile(ctx.pixels, 1))
+    differences = np.diff(v)
+    noise = float(1.4826 * np.median(np.abs(differences - np.median(differences)))) + 1e-9
+    if image_range is None:
+        values = ctx.pixels[_usable_pixels(ctx, ctx.pixels)]
+        image_range = float(np.ptp(np.percentile(values, [1, 99]))) if values.size else 0.
+    img_range = image_range
     if step < max(8 * noise, 0.04 * img_range):
         return reject("step height below noise / dynamic-range threshold")
 
@@ -248,7 +362,7 @@ def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 8.0):
                       f"(only {100 * locality:.0f} % of the change is local)")
 
     pos_mm = start_mm + best_i * mm_per_sample
-    return {"side": side, "detected": True,
+    return {"side": side, "detected": True, "method": "step", "manual": False,
             "offset_from_edge_mm": float(pos_mm),
             "step_height": step, "confidence": float(step / max(noise, 1e-9)),
             "ramp_ratio": float(ramp_ratio), "locality": float(locality),
@@ -320,15 +434,33 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     # Fall back to every detected ruler when the quality gate rejected them
     # all: a bad scale that is flagged as bad beats no result at all.
     used_sides = [s for s, r in ruler_rows.items() if r.get("reliable")]
+    if len(used_sides) >= 2:
+        # Require scale estimates to agree; regular but wrongly identified marks
+        # must not determine the physical scale merely because their fit is neat.
+        clusters = [group for size in range(2, len(used_sides) + 1)
+                    for group in combinations(used_sides, size)
+                    if min(ruler_rows[s]["pitch_mm"] for s in group) > 0
+                    and max(ruler_rows[s]["pitch_mm"] for s in group)
+                    / min(ruler_rows[s]["pitch_mm"] for s in group) <= 1.03]
+        largest = max(map(len, clusters), default=0)
+        winners = [group for group in clusters if len(group) == largest]
+        accepted = set(winners[0]) if len(winners) == 1 and largest >= 2 else set()
+        for side in used_sides:
+            if side not in accepted:
+                ruler_rows[side]["reliable"] = False
+                ruler_rows[side]["rejection_reason"] = "Ruler pitch disagrees with the other sides"
+        used_sides = [s for s in used_sides if s in accepted]
+    pitches = [ruler_rows[s]["pitch_mm"] for s in used_sides]
     rejected = [s for s, r in ruler_rows.items()
                 if r.get("detected") and not r.get("reliable")]
     scale_reliable = len(used_sides) >= 2
+    fallback_sides = []
     if not pitches:
         pitches = [r["pitch_mm"] for r in ruler_rows.values()
                    if r.get("detected")]
-        used_sides = [s for s, r in ruler_rows.items() if r.get("detected")]
+        fallback_sides = [s for s, r in ruler_rows.items() if r.get("detected")]
 
-    pitch_T = float(np.mean(pitches)) if pitches else float("nan")
+    pitch_T = float(np.median(pitches)) if pitches else float("nan")
     k = nominal_pitch / pitch_T if pitches else 1.0   # absolute-scale correction
 
     # ---- corner dimensions --------------------------------------------------
@@ -382,6 +514,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         "reliable": bool(scale_reliable),
         "rulers_used": sorted(used_sides),
         "rulers_rejected": sorted(rejected),
+        "indicative_rulers": sorted(fallback_sides),
         "ruler_linearity_rms_max_mm": ruler_rms_max,
     }
     if "ImagerPixelSpacing" in meta_spacings:
@@ -391,6 +524,13 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     # ---- field alignment ----------------------------------------------------
     sid_mm = float((ctx.params or {}).get("sid_mm", 1000.0))
     central_nominal = nominal_first + central_idx * nominal_pitch
+    # Field-edge offsets use the definition's outer edge in the transform frame.
+    # Convert that frame to absolute mm before comparing with the centered field.
+    reference_width = tol.get("field_reference_width_mm")
+    expected_offset = ((float(reference_width) - pdef.side_mm * k) / 2.0
+                       if reference_width is not None else None)
+    reference_label = (f"the centered {reference_width:g} mm field boundary"
+                       if reference_width is not None else "the central line")
     field_rows = {}
     worst_pct = 0.0
     any_field = False
@@ -403,11 +543,15 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         off_edge = f["offset_from_edge_mm"] * k
         central = central_from_edge.get(side, central_nominal)
         dev = off_edge + central                 # distance field edge <-> central line
-        pct = 100.0 * dev / sid_mm
+        reference_dev = off_edge - expected_offset if expected_offset is not None else dev
+        pct = 100.0 * reference_dev / sid_mm
         field_rows[side] = {
             "detected": True,
             "offset_from_phantom_edge_mm": off_edge,
             "deviation_from_central_line_mm": dev,
+            **({"deviation_from_reference_mm": reference_dev,
+                "expected_offset_from_phantom_edge_mm": expected_offset}
+               if expected_offset is not None else {}),
             "pct_of_sid": pct,
             "status": "pass" if abs(pct) <= tol.get("field_pct_sid", 2.0)
                       else "fail",
@@ -450,13 +594,11 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     # phantom, the geometry, or the scale is at fault.
     if rejected:
         detail = ", ".join(
-            f"{s} (mark spacing scatters by "
-            f"{ruler_rows[s]['linearity_rms_mm']:.2f} mm rms)"
+            f"{s} ({ruler_rows[s].get('rejection_reason') or 'mark spacing scatters by ' + format(ruler_rows[s]['linearity_rms_mm'], '.2f') + ' mm rms'})"
             for s in sorted(rejected))
         dim_reasons.append(
             f"ruler(s) excluded from the scale: {detail}; the limit is "
-            f"{ruler_rms_max:g} mm rms. Evenly spaced marks are what makes a "
-            f"ruler usable, so these were not measuring the ruler. Check the "
+            f"{ruler_rms_max:g} mm rms and ruler pitches must agree within 3%. Check the "
             f"ruler ROIs in step C.")
     if not scale_reliable:
         used = ", ".join(sorted(used_sides)) or "none"
@@ -485,13 +627,13 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         for side, f in field_rows.items():
             if f.get("detected") and f.get("status") != "pass":
                 field_reasons.append(
-                    f"{side}: field edge is {f['deviation_from_central_line_mm']:+.1f} mm "
-                    f"from the central line, {f['pct_of_sid']:+.2f}% of SID "
+                    f"{side}: field edge is {f.get('deviation_from_reference_mm', f['deviation_from_central_line_mm']):+.1f} mm "
+                    f"from {reference_label}, {f['pct_of_sid']:+.2f}% of SID "
                     f"(tolerance +/-{tol.get('field_pct_sid', 2.0):g}%).")
         if not field_reasons:
             field_reasons.append(
                 f"every measurable side is within "
-                f"+/-{tol.get('field_pct_sid', 2.0):g}% of SID "
+                f"+/-{tol.get('field_pct_sid', 2.0):g}% of SID of {reference_label} "
                 f"(worst {worst_pct:.2f}%).")
 
     return {
@@ -502,5 +644,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         "scale": scale,
         "field_alignment": field_rows, "field_status": field_status,
         "field_reasons": field_reasons,
+        **({"field_reference_width_mm": float(reference_width)}
+           if reference_width is not None else {}),
         "sid_mm": sid_mm,
     }

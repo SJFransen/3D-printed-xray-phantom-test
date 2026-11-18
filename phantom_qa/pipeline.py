@@ -49,7 +49,7 @@ def to_jsonable(obj):
 
 def build_ctx(scan: ScanData, pdef: PhantomDef, reg: Registration,
               params: dict | None = None) -> Ctx:
-    p = {"spacing_candidates": scan.spacing_candidates}
+    p = {"spacing_candidates": scan.spacing_candidates, "scan_meta": scan.meta}
     if params:
         p.update(params)
     return Ctx(pixels=scan.pixels, T=reg.transform, pdef=pdef, reg=reg, params=p)

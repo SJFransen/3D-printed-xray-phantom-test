@@ -80,6 +80,49 @@ def test_all_pass_has_only_next_scan(passing, pdef):
     assert all(k in tasks[0] for k in ("id", "type", "title", "description", "priority", "status", "related_feature", "steps", "image_references"))
 
 
+def test_passing_geometry_checks_survive_technical_warnings(client, mod, algorithms, passing):
+    passing[1]["geometry"]["dimensions"].update(mean_side_mm=299.69, dev_from_nominal_pct=-.10)
+    passing[1]["geometry"]["scale"]["reliable"] = False
+    result = upload(client)
+    checks = {f["id"]: f for f in result["overview_features"]}
+    assert checks["geometry"]["state"] == checks["alignment"]["state"] == "pass"
+    assert result["overall"] == "pass" and result["measurement_warning"]
+    assert {task["type"] for task in result["tasks"]} == {"next_scan", "measurement_warning"}
+    stored = mod.store.get(result["id"])
+    assert stored["results"]["geometry"]["status"] == "error"  # Preserve technical audit.
+    from phantom_qa.report import _geometry_status
+    assert _geometry_status(stored["results"]["geometry"], "dimension_status") == "pass"
+    assert _geometry_status(stored["results"]["geometry"], "field_status") == "pass"
+    reopened = client.get(f"/api/auto-analyse/{result['id']}").json()
+    assert reopened["overview_features"] == result["overview_features"]
+
+
+def test_geometry_pass_is_independent_of_unavailable_field(client, algorithms, passing):
+    passing[1]["geometry"]["field_status"] = "n/a"
+    passing[1]["geometry"]["field_alignment"] = {}
+    result = upload(client)
+    checks = {f["id"]: f for f in result["overview_features"]}
+    assert checks["geometry"]["state"] == "pass"
+    assert checks["alignment"]["state"] == "attention"
+    assert result["overall"] == "attention"
+
+
+@pytest.mark.parametrize("missing", ["dimensions", "field_alignment"])
+def test_missing_values_cannot_receive_overview_pass(missing, client, algorithms, passing):
+    passing[1]["geometry"][missing] = {}
+    result = upload(client)
+    checks = {f["id"]: f for f in result["overview_features"]}
+    assert checks["geometry" if missing == "dimensions" else "alignment"]["state"] == "attention"
+
+
+def test_alignment_pass_is_independent_of_dimension_warning(client, algorithms, passing):
+    passing[1]["geometry"]["dimension_status"] = "warn"
+    result = upload(client)
+    checks = {f["id"]: f for f in result["overview_features"]}
+    assert checks["geometry"]["state"] == "attention"
+    assert checks["alignment"]["state"] == "pass"
+
+
 @pytest.mark.parametrize("group", pipeline.TESTS)
 def test_missing_group_is_attention(group, passing, pdef):
     geometry, results = passing
@@ -172,6 +215,23 @@ def test_duplicate_aware_tasks(duplicate, expected, absent, passing, pdef):
     assert feature_tasks[0]["solutions"]
     assert len({t["id"] for t in tasks}) == len(tasks)
     assert "analysis_attention" not in [t["type"] for t in tasks]
+
+
+def test_tasks_match_result_labels_and_group_geometry_guidance():
+    features = [{"id": name, "state": "attention", "issues": [
+        {"path": "field_alignment.top"}, {"path": "dimensions.mean_side_mm"}]}
+        for name in reversed(pipeline.TESTS)]
+    tasks = auto.generate_tasks("scan", "2026-10-15", features, True)
+    guidance = [task for task in tasks if task["type"] == "feature_solution"]
+    assert [task["related_feature"] for task in guidance] == list(pipeline.TESTS)
+    assert [task["description"] for task in guidance] == [
+        "Check " + auto.LABELS[name] + "." for name in pipeline.TESTS]
+    assert len({task["id"] for task in tasks}) == len(tasks)
+    assert any(step["title"].startswith("Field alignment") for step in guidance[0]["solutions"])
+    assert any(step["title"].startswith("Dimensions") for step in guidance[0]["solutions"])
+    contact = next(task for task in tasks if task["type"] == "contact_technician")
+    assert contact["description"] == (
+        "Contact the MSF technician about Geometry, Line pairs, Low contrast, Uniformity and Wedge.")
 
 
 def test_missing_upload_date_warns_without_inventing_deadline(passing, pdef):

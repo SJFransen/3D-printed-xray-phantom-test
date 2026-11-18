@@ -14,7 +14,7 @@ from datetime import datetime
 from . import pipeline
 from . import solutions
 
-from .analysis.assessment import LABELS, SIDES, assess_features, collect_overlays
+from .analysis.assessment import LABELS, SIDES, assess_features, collect_overlays, geometry_checks
 
 
 @dataclass
@@ -59,21 +59,11 @@ def generate_tasks(aid, uploaded_at, features, duplicate):
                           "Upload date missing",
                           "Next scan date unavailable.",
                           priority="high"))
-    affected = [f for f in features if f["state"] != "pass"]
+    affected = sorted((f for f in features if f["state"] != "pass"),
+                      key=lambda f: pipeline.TESTS.index(f["id"]))
     if affected:
         if duplicate:
-            names = []
-            for feature in affected:
-                if feature["id"] == "geometry":
-                    paths = " ".join(issue["path"] for issue in feature.get("issues", []))
-                    if "field" in paths:
-                        names.append("X-ray field alignment")
-                    if any(part in paths for part in ("dimension", "ruler", "scale", "corner")):
-                        names.append("Dimensions")
-                    if not names:
-                        names.append("Geometry")
-                else:
-                    names.append(LABELS[feature["id"]])
+            names = [LABELS[feature["id"]] for feature in affected]
             tests = ", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else names[0]
             tasks.append(Task(f"{aid}:contact_technician", "contact_technician",
                               "Contact the MSF technician",
@@ -82,12 +72,18 @@ def generate_tasks(aid, uploaded_at, features, duplicate):
             tasks.append(Task(f"{aid}:repeat_scan", "repeat_scan", "Repeat the phantom scan once",
                               "Repeat the phantom scan once and upload the new scan.", priority="high"))
     for feature in affected:
-        for key in solutions.feature_keys(feature):
-            steps = solutions.load_steps(key)
-            tasks.append(Task(f"{aid}:solution:{key}", "feature_solution",
-                              "Check " + solutions.FEATURES[key].replace("-", " "),
-                              "Check " + solutions.FEATURES[key].replace("-", " ") + ".",
-                              priority="high", related_feature=feature["id"], solutions=steps))
+        keys = solutions.feature_keys(feature)
+        steps = []
+        for key in keys:
+            for step in solutions.load_steps(key):
+                if len(keys) > 1:
+                    step = {**step, "title": solutions.FEATURES[key].replace("-", " ").capitalize()
+                            + " — " + step["title"]}
+                steps.append(step)
+        label = LABELS[feature["id"]]
+        tasks.append(Task(f"{aid}:solution:{feature['id']}", "feature_solution",
+                          "Check " + label, "Check " + label + ".",
+                          priority="high", related_feature=feature["id"], solutions=steps))
     return [asdict(t) for t in tasks]
 
 
@@ -100,15 +96,30 @@ def result_payload(record, pdef, duplicate, *, saved):
     else:
         # Legacy results remain stored as originally computed; no fresh measurement is invented.
         features = assess_features(geometry, copy.deepcopy(results), pdef)
-    all_pass = all(f["state"] == "pass" for f in features)
+    checks = geometry_checks(results.get("geometry") or {})
+    overview = [*checks, *(f for f in features if f["id"] != "geometry")]
+    all_pass = all(f["state"] == "pass" for f in overview)
+    warning = next((f for f in features if f["id"] == "geometry" and f.get("technical_attention")
+                    and any(c["state"] == "pass" for c in checks)), None)
+    task_features = [{**f, "state": "pass" if all(c["state"] == "pass" for c in checks) else "attention"}
+                     if f["id"] == "geometry" else f for f in features]
+    tasks = generate_tasks(record["id"], record.get("created_at"), task_features, duplicate)
+    if warning:
+        tasks.append(asdict(Task(f"{record['id']}:measurement_warning", "measurement_warning",
+                                 "Review measurement reliability",
+                                 "Review measurement reliability and technical warnings in Analyze.",
+                                 related_feature="geometry")))
     return {"id": record["id"], "source_name": record["source_name"],
             "created_at": record.get("created_at"), "duplicate": duplicate,
             "saved": saved, "history_record_unchanged": duplicate,
             "overall": "pass" if all_pass else "attention", "status": record.get("status"),
-            "message": "All features passed. No further action required." if all_pass
+            "message": ("All measurements passed. Review technical warnings in Analyze." if warning
+                        else "All features passed. No further action required.") if all_pass
                        else "One or more features need attention.",
+            "overview_features": overview,
+            "measurement_warning": "Measurement reliability needs review in Analyze." if warning else "",
             "features": features, "results": results, "geometry": geometry,
             **{key: record.get(key, "") for key in ("site", "phantom", "operator", "notes")},
-            "tasks": generate_tasks(record["id"], record.get("created_at"), features, duplicate),
+            "tasks": tasks,
             "validation_status": "", "manually_reviewed": False,
             "history_validation_status": record.get("validation_status") or ""}

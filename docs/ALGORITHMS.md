@@ -91,7 +91,7 @@ manual correction controls, compatibility and regression coverage.
 reads 5.000 mm: the transform scale is anchored to the printed pitch, not to
 DICOM metadata. Per scan:
 
-- `pitch_measured_mm` — mean regression slope of the six ruler-line positions,
+- `pitch_measured_mm` — median regression slope of the six ruler-line positions,
   over the sides that pass the quality gate below.
 - `k = 5.0 / pitch_measured` — a residual per-scan correction. All absolute
   dimensions are reported as (transform mm × k).
@@ -100,12 +100,12 @@ DICOM metadata. Per scan:
 
 **Ruler quality gate.** Because `k` multiplies every reported length, one ruler
 that was not actually found corrupts the whole report. A side is admitted to the
-mean only if its mark positions are evenly spaced — linearity residual RMS
+scale only if its mark positions are evenly spaced — linearity residual RMS
 ≤ `ruler_linearity_rms_max_mm` (0.5 mm; the reference scans sit below 0.25 mm).
 Rejected sides are listed in `scale.rulers_rejected` and named in the dimension
 reasons. Two admitted sides are required for `scale.reliable`; below that the
 scale cannot be cross-checked and the results say so rather than presenting a
-number that looks measured. If every side is rejected the mean falls back to all
+number that looks measured. If every side is rejected the median falls back to all
 detected sides, flagged unreliable — a bad scale that announces itself is more
 useful than no result.
 
@@ -124,15 +124,21 @@ the scale.
 
 **Ruler probe.** A profile is taken along the side's inward normal through the
 ruler centre, averaged over ±3.5 mm along the edge to dilute the pointer tick.
-The six line positions are the six strongest peaks, located sub-pixel by
-intensity centroid. Offsets are referenced to the locally detected face edge —
+Candidate peaks are located sub-pixel by intensity centroid and matched to six
+consecutive, approximately 5 mm spaced marks. Extra bright peaks cannot simply
+replace a missing mark. The search permits ±15% pitch variation and ±4 mm first-mark
+offset; a complete measured pattern is required, without inventing missing marks.
+Offsets are referenced to the locally detected face edge —
 the strongest rising step within −2…+6 mm — which decouples them from
 corner-fit residuals.
 
 **Pitch and linearity.** Linear regression of position against index per ruler
 gives the pitch (nominal 5.0 mm), the per-line residuals, and their RMS
 (`linearity_rms_mm`). The RMS is also the admission test for the scale chain
-above; `reliable` on each ruler row records the outcome.
+above; `reliable` on each ruler row records the outcome. Ruler pitches must also
+agree within 3%; an equally supported competing scale is rejected. The median
+accepted pitch sets scale, and at least two accepted rulers are required. Any
+fallback scale remains explicitly indicative, never a reliable measurement.
 
 **Dimensions.** Corner-to-corner distances in calibrated millimetres for four
 sides and both diagonals, against the assumed nominal side of 300.0 mm; plus
@@ -141,38 +147,54 @@ central-line separations (nominal 260.0 mm = side − 2 × 20 mm).
 **Field alignment.** During pattern initialisation, each blue ruler probe also
 sets the starting line for a field-edge search. From the probe's inner end, the
 search walks outward through actual image pixels to the first zero-valued
-boundary. Three consecutive zeros confirm the boundary (or the remaining pixels
-at the image border). If the inner end is already zero, the search first moves
+boundary. At least three zero samples spanning 1.5 mm confirm a candidate, with
+positive samples immediately before it. Declared DICOM padding is excluded after
+rescale and polarity conversion. A lone zero border and zero transitions within
+3 mm of the phantom face are insufficient evidence. If the inner end is already zero, the search first moves
 toward the phantom centre to exposed pixels. The marker is placed on the first
 zero, including when collimation falls inside the phantom; offsets are positive
 outside and negative inside. An image border without actual zeros is not an edge.
 
 For images without a zero boundary, the existing step detector remains available.
-Its probe runs outward from each side, from 8 mm past the
-face edge to 12 mm short of the image border, averaged over ±10 mm along the
-edge. A collimation border is a genuine step — direct exposure on one side, a
+Its probe runs outward from each side, from 2 mm past the
+face edge to three pixels short of the image border. Five separate profiles
+are sampled at 0, ±3 and ±6 mm along the side. A collimation border is a genuine step — direct exposure on one side, a
 blocked beam on the other — whereas scatter gradients and the phantom's carrier
 frame are not. The detector fits both a two-plateau change-point model and a
 single linear ramp, and accepts the step only if **all** of:
 
-- the probe is at least 25 mm long, with at least 8 mm of plateau on both sides
+- the probe is at least 8 mm long, with at least 3 mm of plateau on both sides
   of the split;
 - `SSE_step ≤ 0.35 × SSE_linear`, so a ramp does not explain it as well;
 - at least 70 % of the plateau difference occurs within a few millimetres of the
   split;
 - the step height exceeds max(8 × local noise, 4 % of the image dynamic range).
 
+Noise uses a robust median absolute difference estimate; smoothing uses a fixed
+0.5 mm physical scale. For either detection method, at least three of five
+profiles must support a common edge line, within 1 mm residual and at most 45°
+tilt relative to the phantom side. This allows slanted fields without accepting
+an isolated artifact. The result records the method, agreeing-profile count,
+line slope, residual spread and a confidence score (not a probability).
+
 Otherwise the side is reported not detected, with a reason, and manual placement
-is requested. Deviation is the distance from the field edge to that side's
-central long line, in millimetres and as a percentage of SID (tolerance ±2 %).
+is requested. The MSF definition uses a centered 322 × 322 mm field as the
+reference. Each expected boundary is 161 mm from the phantom center. Deviation
+is the signed distance from the measured field edge to that boundary (positive
+outward), in absolute millimetres and as a percentage of SID (tolerance ±2 %).
+The expected offset beyond the phantom edge is `(322 − side_mm × k) / 2`,
+where `k` is the ruler-based absolute-scale correction. A roughly 300 mm phantom
+therefore has a target field edge about 11 mm outside each side. Definitions
+without `field_reference_width_mm` retain the central-line reference.
 
 The step-detector probe deliberately stops short of the image border, which is itself a large
 sharp intensity change that would otherwise be reported as a collimation edge.
 
 > In the original step-detector validation, all six reference scans were reported as not measurable:
 > the phantom nearly fills the detector, leaving only 30–61 mm of image outside
-> its edge, and the radiation field extends past the image. To use this test,
-> collimate visibly inside the detector.
+> its edge. A short usable search does not prove that radiation extends beyond
+> the detector. To measure alignment, retain a visible boundary and image content
+> on both sides of it.
 
 **Accuracy note.** Mark-to-edge distances carry a processing-dependent
 uncertainty of roughly ±0.5 mm, because the edge feature itself shifts with edge

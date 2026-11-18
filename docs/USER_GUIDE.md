@@ -12,6 +12,18 @@ which is entered at the moment of the action rather than at sign-in.
 
 ## Running an analysis
 
+For consistent field-alignment measurements, use the same SID and acquisition
+processing, center the phantom, and retain a visible collimation boundary on
+every side. The reference field is 322 × 322 mm, about 11 mm beyond each side of
+the approximately 300 mm phantom. Keep several millimetres of native image on
+both sides of the boundary; avoid cropped exports and display screenshots.
+Use original DICOM files so padding and acquisition metadata are preserved.
+
+An unavailable edge is not an alignment failure. Correct registration and ruler
+positions first when scale is unreliable. Place an edge manually only where it
+is visible; otherwise repeat the acquisition with adequate image margin. Analyze
+and reports show primary causes first, with expandable technical details.
+
 The wizard has seven steps. Nothing is measured from geometry you have not
 confirmed, and you can move back at any point.
 

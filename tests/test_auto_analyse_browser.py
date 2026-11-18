@@ -84,6 +84,31 @@ def browser_page(mod, algorithms, legacy_upload_cache):
         sock.close()
 
 
+def test_single_lowcontrast_outline_and_upload_hint(browser_page, passing):
+    page, errors = browser_page
+    hint = "DICOM file (preferred), zipped DICOM CD export, or a plain image."
+    assert hint in page.locator("#auto-drop").inner_text()
+    for circle in passing[0]["lowcontrast"]["circles"]:
+        roi_id = "lowcontrast/" + circle["id"]
+        circle["roi"] = {**circle["roi"], "id": roi_id}
+        circle["bg_roi"] = {"type": "annulus", "id": roi_id + "/bg",
+                            "center_px": [5, 5], "inner_radius_px": 3, "outer_radius_px": 4}
+        circle["full_circle"] = {**circle["roi"], "id": roi_id + "/outline", "radius_px": 3}
+    # An incomplete proposal still needs one visible circle.
+    del passing[0]["lowcontrast"]["circles"][-1]["full_circle"]
+    send_scan(page)
+    circles = page.locator('#auto-overlays circle[data-roi-id^="lowcontrast/"]')
+    assert circles.count() == len(passing[0]["lowcontrast"]["circles"])
+    assert page.locator('#auto-overlays [data-roi-id$="/bg"]').count() == 0
+    for width in (1280, 360):
+        page.set_viewport_size({"width": width, "height": 900})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        preview = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
+        preview.mkdir(exist_ok=True)
+        page.screenshot(path=str(preview / f"small-fixes-auto-{width}.png"), full_page=True)
+    assert not errors
+
+
 def choose_scan(page, file):
     with page.expect_response("**/api/uploads/preview"):
         field = page.locator("#auto-file")
@@ -254,7 +279,7 @@ def test_browser_upload_pass_viewer_tasks_and_navigation(browser_page):
     assert page.locator("#auto-results-page").is_visible()
     assert page.locator("#auto-technical").count() == 0
     assert page.locator("#auto-feature-status small").count() == 0
-    assert page.locator("#auto-feature-status li.auto-pass").count() == 5
+    assert page.locator("#auto-feature-status li.auto-pass").count() == 6
     assert page.locator('#auto-tasks [data-task-type="next_scan"]').count() == 1
     assert page.locator('#auto-tasks [data-task-type="contact_technician"]').count() == 0
     assert page.locator("#auto-overlays polygon").count() > 0
@@ -371,6 +396,74 @@ def test_browser_incomplete_measurement_keeps_orange_rois_and_opens_same_error_i
     assert not errors
 
 
+def test_browser_passing_measurements_keep_pass_with_technical_warnings(browser_page, passing):
+    page, errors = browser_page
+    passing[1]["geometry"]["dimensions"].update(mean_side_mm=299.69, dev_from_nominal_pct=-.10)
+    passing[1]["geometry"]["scale"]["reliable"] = False
+    send_scan(page)
+    assert page.locator("#auto-feature-status li.auto-pass").count() == 6
+    assert page.locator("#auto-feature-status li.auto-attention").count() == 0
+    assert page.locator("#auto-measurement-warning").is_visible()
+    assert page.locator('#auto-tasks [data-task-type="repeat_scan"]').count() == 0
+    preview = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
+    preview.mkdir(exist_ok=True)
+    for width in (1280, 360):
+        page.set_viewport_size({"width": width, "height": 900})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.screenshot(path=str(preview / f"passing-measurements-auto-{width}.png"), full_page=True)
+    page.locator("#auto-open-analyze").click()
+    page.locator("#btn-confirm-e").wait_for(state="visible")
+    summaries = page.locator("#stage-content > details.advanced > summary")
+    for title in ("Geometry & dimensions", "X-ray field alignment"):
+        assert summaries.filter(has_text=title).locator(".chip").inner_text() == "pass"
+    summaries.filter(has_text="Geometry & dimensions").click()
+    assert "299.69 mm" in page.locator("#stage-content").inner_text()
+    assert page.get_by_text("Technical warnings", exact=True).first.is_visible()
+    assert not errors
+
+
+def test_browser_failed_alignment_does_not_change_dimension_pass(browser_page, passing):
+    page, errors = browser_page
+    passing[1]["geometry"]["field_status"] = "fail"
+    passing[1]["geometry"]["field_alignment"]["top"]["status"] = "fail"
+    send_scan(page)
+    assert page.locator('#auto-feature-status li[aria-label="Geometry: PASS"]').count() == 1
+    assert page.locator('#auto-feature-status li[aria-label="X-ray field alignment: Attention"]').count() == 1
+    assert page.locator('#auto-overlays [data-roi-id="geometry/corners"]').get_attribute("stroke") == "#65df8b"
+    assert page.locator('#auto-overlays [data-roi-id="geometry/field/top"]').get_attribute("stroke") == "#ffb45c"
+    assert not errors
+
+
+def test_browser_geometry_primary_causes_and_expandable_details(browser_page, passing):
+    page, errors = browser_page
+    geometry, results = passing
+    for side in ("top", "right", "bottom", "left"):
+        geometry["geometry"]["field_edges"][side] = {
+            "detected": False, "reason": "Insufficient search margin"}
+    results["geometry"]["field_status"] = "n/a"
+    results["geometry"]["field_alignment"] = {}
+    results["geometry"]["scale"]["reliable"] = False
+    send_scan(page)
+    assert page.locator('#auto-feature-status li[aria-label="Geometry: PASS"]').count() == 1
+    assert page.locator('#auto-feature-status li[aria-label="X-ray field alignment: Attention"]').count() == 1
+    page.locator("#auto-open-analyze").click()
+    page.locator("#btn-confirm-e").wait_for(state="visible")
+    text = page.locator("#stage-content").inner_text()
+    assert "Top field edge: Insufficient search margin" in text
+    assert "field_alignment.top.pct_of_sid" not in text
+    assert "Existing algorithm verdict: n/a" not in text
+    preview = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
+    preview.mkdir(exist_ok=True)
+    for width in (1280, 360):
+        page.set_viewport_size({"width": width, "height": 900})
+        page.get_by_text("Technical details", exact=True).first.scroll_into_view_if_needed()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.screenshot(path=str(preview / f"field-consistency-diagnostics-{width}.png"), full_page=True)
+    page.get_by_text("Technical details", exact=True).first.click()
+    assert "field_alignment.top.pct_of_sid" in page.locator("#stage-content").inner_text()
+    assert not errors
+
+
 def test_browser_orange_duplicate_and_failed_request(browser_page, passing):
     page, errors = browser_page
     passing[1]["uniformity"]["rows"][0]["status"] = "fail"
@@ -379,7 +472,7 @@ def test_browser_orange_duplicate_and_failed_request(browser_page, passing):
     assert page.locator('#auto-tasks [data-task-type="repeat_scan"]').count() == 1
     assert page.locator("#auto-overlays [stroke='#ffb45c']").count() > 0
     assert page.locator("#auto-feature-status li.auto-attention").inner_text().startswith("Uniformity")
-    assert "Uniformity" not in page.locator("#auto-tasks").inner_text()
+    assert "Check Uniformity." in page.locator("#auto-tasks").inner_text()
     page.locator("#auto-new-scan").click()
     send_scan(page)  # exactly the same bytes
     assert page.locator('#auto-tasks [data-task-type="contact_technician"]').count() == 1
@@ -514,6 +607,15 @@ def test_browser_metadata_field_correction_and_saved_revisions(browser_page, mod
     clicked_offset = stored["geometry"]["geometry"]["field_edges"]["top"]["offset_from_edge_mm"]
     assert clicked_offset == pytest.approx(40, abs=.5)  # screen clicks have finite pixel precision
     assert stored["results"]["geometry"]["field_alignment"]["top"]["offset_from_phantom_edge_mm"] == pytest.approx(clicked_offset)
+    assert stored["results"]["geometry"]["field_reference_width_mm"] == 322.0
+    assert "centered 322 mm field boundary" in page.locator("#stage-content").inner_text()
+    preview = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
+    preview.mkdir(exist_ok=True)
+    for width in (1280, 360):
+        page.set_viewport_size({"width": width, "height": 900})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.screenshot(path=str(preview / f"alignment-322-{width}.png"), full_page=True)
+    page.set_viewport_size({"width": 1280, "height": 1000})
     page.locator("#btn-confirm-e").click()
     with page.expect_response("**/finalize") as finalized:
         page.locator("#btn-finalize").click()

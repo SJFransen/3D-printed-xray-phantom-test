@@ -84,6 +84,8 @@
     for (const id of ["auto-overlays", "auto-feature-status", "auto-tasks", "auto-scan-select"])
       get(id).replaceChildren();
     get("auto-identity").textContent = ""; get("auto-progress").textContent = "";
+    get("auto-measurement-warning").textContent = "";
+    get("auto-measurement-warning").classList.add("hidden");
     for (const id of ["auto-result", "auto-results-page", "auto-image-error", "auto-error", "auto-scan-choice", "auto-viewer"])
       get(id).classList.add("hidden");
     upload.reset(); form.classList.remove("hidden");
@@ -270,17 +272,29 @@
     svg.replaceChildren(); svg.setAttribute("viewBox", `0 0 ${record.image.cols} ${record.image.rows}`);
     const radius = Math.max(record.image.cols, record.image.rows) / 125;
     for (const feature of record.features) {
-      const color = feature.state === "pass" ? "#65df8b" : "#ffb45c";
       const add = (tag, attrs) => {
+        const roiId = String(attrs["data-roi-id"]);
+        const checkId = feature.id === "geometry" && (roiId.startsWith("geometry/field/") || roiId.startsWith("field/"))
+          ? "alignment" : feature.id;
+        const check = record.overview_features?.find(check => check.id === checkId) || feature;
+        const color = check.state === "pass" ? "#65df8b" : "#ffb45c";
         const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
         Object.entries({fill: "none", stroke: color, "stroke-width": 1.4, ...attrs})
           .forEach(([key, value]) => node.setAttribute(key, value));
         const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-        title.textContent = `${feature.label}: ${feature.state === "pass" ? "PASS" : "Attention required"}`;
+        title.textContent = `${check.label}: ${check.state === "pass" ? "PASS" : "Attention required"}`;
         node.append(title); svg.append(node);
       };
-      const rois = feature.id === "linepairs" && record.geometry
+      let rois = feature.id === "linepairs" && record.geometry
         ? ViewerTools.linepairRois(record.geometry).map(entry => entry.roi) : feature.overlays;
+      // The automatic viewer needs one target outline, not the sampling/background rings.
+      // Use only validated overlays, preserving available proposals on incomplete scans.
+      if (feature.id === "lowcontrast") {
+        const outlines = new Set(rois.filter(roi => roi.type === "circle" && roi.id?.endsWith("/outline"))
+          .map(roi => roi.id.slice(0, -"/outline".length)));
+        rois = rois.filter(roi => roi.type !== "annulus" && !roi.id?.endsWith("/bg")
+          && !(roi.type === "circle" && outlines.has(roi.id)));
+      }
       for (const roi of rois) {
         const draw = (tag, attrs) => add(tag, {"data-roi-id": roi.id || feature.id, ...attrs});
         if (roi.type === "rect") draw("polygon", {points: roi.corners_px.map(p => p.join(",")).join(" ")});
@@ -307,7 +321,9 @@
     renderOverlays(record);
     viewer.setScan(record);
     const statuses = get("auto-feature-status"); statuses.replaceChildren();
-    for (const feature of record.features) {
+    get("auto-measurement-warning").textContent = record.measurement_warning || "";
+    get("auto-measurement-warning").classList.toggle("hidden", !record.measurement_warning);
+    for (const feature of record.overview_features || record.features) {
       const row = make("li", feature.label,
                        feature.state === "pass" ? "auto-pass" : "auto-attention");
       row.append(make("span", feature.state === "pass" ? "PASS" : "Attention", "auto-verdict"));

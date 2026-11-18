@@ -27,8 +27,18 @@ window reset preserves zoom/pan; fit restores the full scan. Fitted scans also
 refit when the viewport changes size.
 
 Feature results sit above the image, with PASS or Attention beside each label.
+Geometry and X-ray field alignment have independent overview verdicts. A passing
+dimension or alignment measurement stays PASS when the combined geometry
+assessment has technical warnings; these are shown separately with a review
+instruction. Missing/non-finite measurements cannot pass. Analyze and report
+subtest labels follow the same rule, while the stored technical assessment and
+audit status remain intact. Saved scans receive this presentation on reopening
+without recomputing their measurements.
 Window/centre controls sit below it. Green ROI outlines mean PASS; orange means
 attention. Outlines stay 2.6 screen pixels thick when fitting or zooming.
+Low-contrast targets show one full-circle outline each, falling back to the object
+ROI if that outline is unavailable. Background sampling rings remain in Analyze's
+editor and in the measurements, but are hidden in the automatic viewer.
 Existing proposed ROIs remain visible in orange when detection or measurement
 is incomplete, including nominal fallback proposals. Invalid coordinates cannot
 be plotted, and no new ROI is invented when registration/proposal fails entirely.
@@ -37,8 +47,11 @@ To Do contains the next scan deadline and, when needed, a repeat/escalation inst
 
 - New orange image: “Repeat the phantom scan once and upload the new scan.”
 - Identical previously recorded orange image: “Contact the MSF technician about
-  X-ray field alignment.” The affected tests are named together in one sentence.
+  Geometry.” The affected tests are named together in one sentence.
 
+To Do uses the same feature names and ordering as the results: Geometry, Line
+pairs, Low contrast, Uniformity and Wedge. Geometry groups dimension and field
+alignment guidance under one task, with their step titles identifying each topic.
 Affected features also receive local solution steps, rendered in numeric order
 with inline images and videos. Multiple steps start collapsed. Technical errors
 and QA deviations retain distinct explanations. The next deadline remains one
@@ -59,6 +72,17 @@ line-pair ROI selection function and the exact saved geometry. Opening either
 view changes no geometry, measurements, profile defaults or revisions.
 
 ## Shared results and the line-pair correction
+
+Version 1.5.0 adds detection near the 322 mm reference, agreement across five
+profiles, padding-aware zero-boundary validation, and ruler-pattern/scale
+consistency checks. Technical diagnostics retain all raw issues while presenting
+primary causes first. Existing saved and signed-off results are not rewritten.
+
+Alignment calculations from version 1.4.1 use a centered 322 × 322 mm field
+boundary for the MSF definition. The per-side deviation uses the ruler-corrected
+absolute scale and retains the ±2% SID tolerance. Analyze and reports label the
+reference explicitly. Saved results keep their original reference until an
+unsigned scan is recomputed; opening a saved scan does not change its verdict.
 
 The line-pair detector stores its acceptance flag at `positioning.strip.accepted`.
 The original Auto implementation incorrectly required `positioning.accepted`,

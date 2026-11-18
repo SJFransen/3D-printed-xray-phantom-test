@@ -23,7 +23,7 @@ def alignment_case(algorithms, passing, pdef, monkeypatch):
     for side, ruler in geometry["rulers"].items():
         definition = pdef.rulers[side]
         ruler["line_offsets_mm"] = [definition["first_line_from_edge_mm"] + n * definition["pitch_mm"] for n in range(13)]
-        geometry["field_edges"][side]["offset_from_edge_mm"] = -ruler["line_offsets_mm"][definition["central_long_index"]]
+        geometry["field_edges"][side]["offset_from_edge_mm"] = (322.0 - pdef.side_mm) / 2
     original_register = pipeline.run_stage_a
     transform = Transform(np.array([[.16, 0.], [0., -.16]]), np.array([32., 32.]))
     def register(scan, definition, **kwargs):
@@ -33,6 +33,39 @@ def alignment_case(algorithms, passing, pdef, monkeypatch):
     monkeypatch.setattr(pipeline, "run_stage_a", register)
     monkeypatch.setattr(pipeline._MODULES["geometry"], "compute", compute_geometry)
     return transform
+
+
+@pytest.mark.parametrize("k", [1.0, 1.25])
+@pytest.mark.parametrize("sid,delta,status", [(1000., 0., "pass"), (1000., 19.9, "pass"),
+    (1000., 20.1, "fail"), (1000., -20.1, "fail"), (500., 10.1, "fail")])
+def test_centered_322mm_field_reference(passing, pdef, alignment_case, k, sid, delta, status):
+    from phantom_qa.analysis.common import Ctx
+    geometry = passing[0]["geometry"]
+    expected_offset = (322.0 - pdef.side_mm * k) / 2
+    for side in geometry["rulers"]:
+        geometry["rulers"][side]["line_offsets_mm"] = [n * 5.0 / k for n in range(13)]
+        geometry["field_edges"][side]["offset_from_edge_mm"] = (expected_offset + delta) / k
+    result = compute_geometry(Ctx(np.zeros((64, 64)), alignment_case, pdef, params={"sid_mm": sid}), geometry)
+    assert result["field_reference_width_mm"] == 322.0
+    assert result["field_status"] == status
+    for field in result["field_alignment"].values():
+        assert field["deviation_from_reference_mm"] == pytest.approx(delta)
+        assert field["pct_of_sid"] == pytest.approx(100 * delta / sid)
+        assert field["expected_offset_from_phantom_edge_mm"] == pytest.approx(expected_offset)
+    assert "centered 322 mm field boundary" in " ".join(result["field_reasons"])
+
+
+def test_definition_without_field_width_keeps_legacy_reference(passing, pdef, alignment_case):
+    from phantom_qa.analysis.common import Ctx
+    pdef = copy.deepcopy(pdef)
+    pdef.tolerances.pop("field_reference_width_mm")
+    geometry = passing[0]["geometry"]
+    for side, ruler in geometry["rulers"].items():
+        geometry["field_edges"][side]["offset_from_edge_mm"] = -ruler["line_offsets_mm"][2]
+    result = compute_geometry(Ctx(np.zeros((64, 64)), alignment_case, pdef), geometry)
+    assert "field_reference_width_mm" not in result
+    assert result["field_status"] == "pass"
+    assert all(abs(field["pct_of_sid"]) < 1e-10 for field in result["field_alignment"].values())
 
 
 def test_corrected_alignment_and_reports_survive_reopening(client, mod, alignment_case, pdef):
@@ -51,6 +84,7 @@ def test_corrected_alignment_and_reports_survive_reopening(client, mod, alignmen
     field = updated.json()["results"]["geometry"]["field_alignment"]["top"]
     assert field["status"] == "fail"
     assert field["offset_from_phantom_edge_mm"] == pytest.approx(40)
+    assert field["deviation_from_reference_mm"] == pytest.approx(40 - (322.0 - pdef.side_mm) / 2)
     assert field == preview["geometry"]["field_alignment"]["top"]
     finalized = client.post(f"/api/analyses/{aid}/finalize", json={}).json()
     assert not finalized["report_error"]
@@ -58,6 +92,7 @@ def test_corrected_alignment_and_reports_survive_reopening(client, mod, alignmen
     final = reopened.revision(aid, finalized["revision"])
     assert final["record"]["results"]["geometry"]["field_alignment"]["top"] == field
     assert final["report_html"] != original_report
+    assert "centered 322 mm field boundary" in final["report_html"]
     assert reopened.revision(aid, first["revision"])["report_html"] == original_report
     assert final["record"]["site"] == "Goma" and final["user"] == "qa"
     assert {event["stage"] for event in final["record"]["audit"]} >= {"A", "B", "C", "D", "E", "F"}
@@ -97,7 +132,8 @@ def test_field_corrections_follow_every_side_and_orientation(client, alignment_c
         preview = client.post(f"/api/analyses/{scan['id']}/compute_preview", json={"tests": ["geometry"], "sid_mm": 1000})
         field = preview.json()["geometry"]["field_alignment"][side]
         assert field["offset_from_phantom_edge_mm"] == pytest.approx(30)
-        assert field["status"] == "fail"
+        assert field["deviation_from_reference_mm"] == pytest.approx(30 - (322.0 - pdef.side_mm) / 2)
+        assert field["status"] == "pass"
 
 
 def test_duplicate_can_supply_a_missing_site_without_reanalysing(client, mod, algorithms):
@@ -151,4 +187,4 @@ def test_technician_instruction_names_alignment_and_multiple_tests(passing, pdef
     features = auto_analyse.assess_features(*passing, pdef)
     tasks = auto_analyse.generate_tasks("scan", "2026-10-21", features, True)
     contact = next(task for task in tasks if task["type"] == "contact_technician")
-    assert contact["description"] == "Contact the MSF technician about X-ray field alignment and Uniformity."
+    assert contact["description"] == "Contact the MSF technician about Geometry and Uniformity."

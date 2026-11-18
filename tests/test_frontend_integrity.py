@@ -148,6 +148,7 @@ def _defined_ids(app_js: str, index_html: str) -> set[str]:
     ids = set(re.findall(r'id="([^"]+)"', index_html))
     # elements app.js creates itself
     ids |= set(re.findall(r'\{\s*id:\s*"([^"]+)"', app_js))
+    ids |= set(re.findall(r'\.id\s*=\s*"([^"]+)"', app_js))
     ids |= set(re.findall(r'id="([^"]+)"', app_js))
     return ids
 
