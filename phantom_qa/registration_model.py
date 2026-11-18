@@ -10,7 +10,7 @@ def square(center, side, angle):
     return np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]]) @ R.T * side / 2 + center
 
 
-def detect(pixels, side_px_prior=None):
+def detect(pixels, side_px_prior=None, allow_partial=False):
     """Return ranked square hypotheses, including dark interiors in bright fields."""
     h, w = pixels.shape
     ds = max(1, int(np.ceil(max(h, w) / 384)))
@@ -60,14 +60,23 @@ def detect(pixels, side_px_prior=None):
         corners = square([x,y], side, angle)
         if side < min(limit)*.3 or side > max(limit)*1.1:
             return 1e3
-        if np.any(corners < 2) or np.any(corners > limit-3):
+        if not allow_partial and (np.any(corners < 2) or np.any(corners > limit-3)):
+            return 1e3
+        if allow_partial and (np.any(corners < -limit*.2) or np.any(corners > limit*1.2)):
             return 1e3
         a=np.deg2rad(angle); u=np.array([np.cos(a),np.sin(a)]); v=np.array([-u[1],u[0]])
         scores=[]
         for normal,tangent in ((u,v),(-u,v),(v,u),(-v,u)):
             points=np.array([x,y])+normal*side/2 + f[:,None]*tangent*side
+            visible = np.all((points >= 2) & (points <= limit-3),axis=1)
+            if allow_partial:
+                if visible.mean() < .6:
+                    continue
+                points = points[visible]
             values=ndimage.map_coordinates(gradient,[points[:,1],points[:,0]],order=1,mode='constant')
             scores.append(np.median(values))
+        if len(scores) < 3:
+            return 1e3
         return -float(np.mean(scores)+np.min(scores))
     # A centre prior supplies the first guess; spatial evidence may move it.
     seeds.sort(key=objective)
@@ -103,7 +112,11 @@ def structural_score(pixels, T, pdef):
             q=pts+[dx,dy]
             a,b,c=sample(q),sample(q-normals*2),sample(q+normals*2)
             response=np.maximum(a-np.maximum(b,c),0) if ridge else np.abs(b-c)
-            sides=[np.nanmedian(response[sections==i])/scale for i in np.unique(sections)]
+            sides=[]
+            for i in np.unique(sections):
+                values = response[sections==i]
+                values = values[np.isfinite(values)]
+                sides.append(np.median(values)/scale if len(values) >= 8 else np.nan)
             if np.isfinite(sides).all():
                 best=max(best,float(np.mean(np.clip(sides,0,.3))))
         return best

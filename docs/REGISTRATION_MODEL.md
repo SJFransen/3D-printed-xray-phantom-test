@@ -1,4 +1,50 @@
-# Model-based registration and individual insert flips (1.3.0)
+# Model-based registration and individual insert flips
+
+## Internal-anchor registration (1.4.0)
+
+Every automatic registration now searches for printed uniformity-square
+outlines directly in image pixels, independently of outer-box proposals.
+Enclosed bright outlines propose squares across the image; four full-resolution
+line-centre fits establish their centre, angle and scale using the active
+phantom definition's `uniformity.size_mm`. Rotation/reflection assignments
+identify the central square through the wedge and the remaining layout.
+The wedge must have independently supported evidence on all four frame sides;
+its intensity ordering is not used. A third structure and an unambiguous pose
+are required. Missing or ambiguous anchors retain controlled manual correction.
+
+A confidently identified central-square/wedge pair vetoes outer rectangles
+that disagree in centre, scale or orientation, even when their boundary score
+is high. Accepted candidates otherwise compete using structural agreement.
+The selected transform is fixed before templates and ROIs are built; local
+feature refinement still changes translation/rotation only. Internal recovery
+therefore does not inherit ROI size from an incorrectly detected field box.
+This assumes the printed square dimensions in the active phantom definition
+describe the physical build; other builds need their own calibrated definition.
+
+Outer search also permits bounded out-of-image corners when three sides have
+sufficient visible coverage. Refinement excludes profiles outside the acquired
+image, infers a wholly missing side, and rejects weak in-image sides. Internal
+registration can recover when even those outer proposals cannot be refined.
+
+Registration score metadata records `method`, `inferred_outer_box`, and, for
+internal anchors, the observed square corners, square-fit residual, scale
+source, wedge support and orientation margin. An inferred outer box is for
+positioning/display, never a corner dimension measurement: geometry reports
+no corner dimensions from it. Existing ruler-pitch scale checks remain
+independent. Measuring ROIs outside the image or overlapping a significant
+zero-valued unexposed region raise a measurement-unavailable error in the
+affected test. Nonzero collimation cannot be identified from pixel values
+alone and still requires review of the exposure and feature overlays.
+
+`tests/test_internal_registration.py` is runnable with either pytest or
+`python -m unittest discover -s tests -p test_internal_registration.py -v`.
+It covers independent recovery, rotations/reflections, missing wedges,
+persuasive incorrect outer rectangles, clipped/zero-valued measurements,
+dimension safeguards, metadata round trips, and optional local scans 000039
+and 000002. Historical registrations and manual corners retain their existing
+transform format and are not automatically rewritten. New analyses use 1.4.0.
+
+## Outer-square model and insert flips (1.3.0)
 
 The bright surrounding detector region in the local regression scan
 `Test Bucky 1 LZR QC Leeds/DICOM/000002` used to become the entire phantom

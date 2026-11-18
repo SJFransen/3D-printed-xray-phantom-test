@@ -261,7 +261,7 @@ def propose(ctx: Ctx) -> dict:
     rulers = {side: _ruler_probe(ctx, side) for side in SIDES}
     fields = {side: _field_edge(ctx, side, ruler=rulers[side]) for side in SIDES}
     corners = {}
-    if ctx.reg is not None:
+    if ctx.reg is not None and not ctx.reg.score.get('inferred_outer_box'):
         S2 = ctx.pdef.side_mm / 2.0
         labels = {(-1, 1): "TL", (1, 1): "TR", (1, -1): "BR", (-1, -1): "BL"}
         for c_px in ctx.reg.corners_px:

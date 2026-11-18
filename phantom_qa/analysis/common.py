@@ -101,6 +101,30 @@ def segment(ctx: Ctx, p0_mm, p1_mm, seg_id: str = "") -> dict:
 
 def stats_for_roi(ctx: Ctx, roi: dict) -> dict:
     """Pixel statistics for a rect/circle/annulus ROI dict (uses px geometry)."""
+    if ctx.reg is not None and ctx.reg.score.get('inferred_outer_box'):
+        if roi['type'] == 'rect':
+            bounds = np.asarray(roi['corners_px'])
+        else:
+            radius = roi.get('outer_radius_px', roi.get('radius_px', 0))
+            bounds = np.asarray(roi['center_px']) + np.array([[-radius,-radius], [radius,radius]])
+        if np.any(bounds < 0) or np.any(bounds > np.asarray(ctx.pixels.shape[::-1])-1):
+            raise ValueError('Measuring ROI extends outside the acquired image; measurement unavailable.')
+        # Zero-valued collimation is used by the field-edge detector. Check
+        # only actual ROI samples, with tolerance for isolated dead pixels.
+        from ..features import rect_mask, circle_mask, annulus_mask
+        lo = np.floor(bounds.min(0)).astype(int)
+        hi = np.ceil(bounds.max(0)).astype(int)+1
+        sub = ctx.pixels[lo[1]:hi[1],lo[0]:hi[0]]
+        center = np.asarray(roi['center_px'])-lo
+        if roi['type'] == 'rect':
+            mask = rect_mask(sub.shape,center,roi['size_px'],roi['angle_img_deg'])
+        elif roi['type'] == 'circle':
+            mask = circle_mask(sub.shape,center,roi['radius_px'])
+        else:
+            mask = annulus_mask(sub.shape,center,roi['inner_radius_px'],roi['outer_radius_px'])
+        values = sub[mask]
+        if np.count_nonzero(values == 0) >= max(3, .01*len(values)):
+            raise ValueError('Measuring ROI overlaps a zero-valued unexposed region; measurement unavailable.')
     if roi["type"] == "circle":
         return roi_stats_circle(ctx.pixels, roi["center_px"], roi["radius_px"])
     if roi["type"] == "rect":

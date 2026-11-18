@@ -155,6 +155,7 @@ def detect_phantom_rect(pixels: np.ndarray, downscale: int = 8, initial_corners=
     # --- sub-pixel refinement of each edge -------------------------------
     edge_lines = []
     edge_points_all = []
+    observed_edges = []
     n_samples = 25
     probe_half = 6.0 * ds  # px on each side of the coarse edge
     for i in range(4):
@@ -171,18 +172,34 @@ def detect_phantom_rect(pixels: np.ndarray, downscale: int = 8, initial_corners=
             base = c0 + f * (c1 - c0)
             p_in = base - probe_half * normal
             p_out = base + probe_half * normal
+            if (np.any(np.minimum(p_in, p_out) < 1) or
+                    np.any(np.maximum(p_in, p_out) > np.array(pixels.shape[::-1])-2)):
+                continue
             ts, vals = sample_profile(pixels, p_in, p_out, int(2 * probe_half),
                                       avg_half_width=2.0, n_avg=3)
             # Either frame polarity is possible. Refine the nearest supported
             # transition, rather than jumping across a bright surrounding field.
             smooth = ndimage.gaussian_filter1d(vals, 2.)
             derivative = np.abs(np.gradient(smooth))
+            if derivative.max() < max(np.ptp(vals)*.02, 1e-9):
+                continue
             prior = np.exp(-.5*((np.arange(len(vals))-len(vals)/2)/(len(vals)/5))**2)
             from .features import centroid_peak
             e = centroid_peak(derivative, int(np.argmax(derivative*prior)), half=2)
             t = np.interp(e, np.arange(len(ts)), ts)
             pts_edge.append(p_in + t * (p_out - p_in) / np.linalg.norm(p_out - p_in))
         pts_edge = np.asarray(pts_edge)
+        if len(pts_edge) < 12:
+            limit = np.asarray(pixels.shape[::-1])-1
+            # A genuinely missing side is inferred from the square proposal;
+            # an in-image side with weak evidence is never silently accepted.
+            if np.any((c0 < 0) & (c1 < 0)) or np.any((c0 > limit) & (c1 > limit)):
+                edge_lines.append(((c0+c1)/2,edge_dir))
+                edge_points_all.append(np.empty((0,2)))
+                observed_edges.append(False)
+                continue
+            raise ValueError('Insufficient visible edge support; use internal anchors.')
+        observed_edges.append(True)
         # robust line fit: 2 rounds of outlier rejection
         keep = np.ones(len(pts_edge), bool)
         for _ in range(2):
@@ -205,10 +222,13 @@ def detect_phantom_rect(pixels: np.ndarray, downscale: int = 8, initial_corners=
         st = np.linalg.solve(M, rhs)
         corners.append(c1_ + st[0] * u1)
     corners = np.asarray(corners)
+    if sum(observed_edges) < 3:
+        raise ValueError('Fewer than three supported outer edges; use internal anchors.')
 
     return {"corners": corners, "edge_lines": edge_lines,
             "edge_points": edge_points_all, "coarse_angle_deg": angle,
-            "mask_downscale": ds}
+            "mask_downscale": ds, 'observed_edges': observed_edges,
+            'inferred_outer_box': not all(observed_edges)}
 
 
 # ------------------------------------------------------------------ orientation
@@ -303,6 +323,10 @@ def verify_landmarks(pixels: np.ndarray, T: Transform, pdef) -> tuple[dict, floa
     ppm = T.px_per_mm
     for side, ruler in pdef.rulers.items():
         pred_px = np.asarray(T.mm_to_px(ruler["center_line_mid_mm"]), float)
+        if np.any(pred_px < 0) or np.any(pred_px > np.array(pixels.shape[::-1])-1):
+            landmarks[side] = {'predicted_px': pred_px.tolist(), 'detected_px': None,
+                               'err_mm': None, 'strength': 0.0}
+            continue
         # ruler lines are PARALLEL to the edge; their position varies along the
         # inward normal, so that is the search direction
         normal_mm = np.asarray(ruler["normal_inward_mm"], float)
@@ -340,13 +364,15 @@ def register(pixels: np.ndarray, pdef, corners_hint: np.ndarray | None = None,
         from .registration_model import detect
         prior = pdef.side_mm / spacing_mm if spacing_mm is not None and spacing_mm > 0 else None
         rectangles = []
-        for candidate in detect(pixels, side_px_prior=prior)[:4]:
+        try:
+            candidates = detect(pixels, side_px_prior=prior, allow_partial=True)
+        except ValueError:
+            candidates = []
+        for candidate in candidates[:4]:
             try:
                 rectangles.append(detect_phantom_rect(pixels, initial_corners=candidate['corners']))
             except (ValueError, np.linalg.LinAlgError):
                 continue
-        if not rectangles:
-            raise ValueError('Phantom borders could not be refined; place the corners manually.')
 
     scored = []
     from .registration_model import structural_score
@@ -357,19 +383,56 @@ def register(pixels: np.ndarray, pdef, corners_hint: np.ndarray | None = None,
                 u, s, vt = np.linalg.svd(T.A)
                 T = Transform((u @ vt)*np.mean(s), T.t)
             parts = structural_score(pixels, T, pdef)
+            if rect.get('inferred_outer_box'):
+                parts = {**parts, 'inferred_outer_box': True,
+                         'observed_edges': rect['observed_edges'], 'method': 'partial_outer_model'}
             scored.append((parts['total'], T, {**meta, 'rect': rect}, parts))
+
+    if corners_hint is None:
+        from .registration_anchors import anchor_transforms
+        anchors = sorted(anchor_transforms(pixels, pdef), key=lambda x: -x[2]['total'])
+        if anchors:
+            anchor_T = anchors[0][0]
+            competing = [p['total'] for T, _, p, _ in anchors[1:] if
+                         np.linalg.norm(T.A/ T.px_per_mm-anchor_T.A/anchor_T.px_per_mm) > .05
+                         or np.linalg.norm(T.t-anchor_T.t)*anchor_T.mm_per_px > 3]
+            if anchors[0][2]['total'] - max(competing, default=0.) >= .05:
+                # A well-identified central square independently vetoes a
+                # convincing but incorrectly sized/positioned field rectangle.
+                scored = [entry for entry in scored if
+                          np.linalg.norm(entry[1].t-anchor_T.t)*anchor_T.mm_per_px <= 3
+                          and abs(entry[1].px_per_mm/anchor_T.px_per_mm-1) <= .03
+                          and np.linalg.norm(entry[1].A/entry[1].px_per_mm-
+                                             anchor_T.A/anchor_T.px_per_mm) <= .05]
+        for T, meta, parts, anchor in anchors:
+            L = pdef.side_mm / 2
+            corners = T.mm_to_px([[-L,L], [L,L], [L,-L], [-L,-L]])
+            parts = {**parts, 'method': 'internal_square_wedge',
+                     'central_square_px': anchor['corners'].tolist(),
+                     'anchor_strength': anchor['strength'],
+                     'wedge_outline_score': parts['wedge'],
+                     'wedge_min_side_support': anchor['wedge_support'],
+                     'square_fit_residual_mm': anchor['square_residual_mm'],
+                     'scale_source': 'central_uniformity_outline',
+                     'inferred_outer_box': True}
+            scored.append((parts['total'], T, {**meta, 'rect': {
+                'corners': corners, 'coarse_angle_deg': T.rotation_deg}}, parts))
+    if not scored:
+        raise ValueError('No phantom boundary or internal anchors verified; place the corners manually.')
     scored.sort(key=lambda x: -x[0])
     best_score, best_T, best_meta, best_parts = scored[0]
 
     alternatives = [score for score,T,_,_ in scored[1:] if
-                    np.linalg.norm(T.A/T.px_per_mm-best_T.A/best_T.px_per_mm) > .25]
+                    np.linalg.norm(T.A/T.px_per_mm-best_T.A/best_T.px_per_mm) > .25
+                    or np.linalg.norm(T.t-best_T.t)*best_T.mm_per_px > 3
+                    or abs(T.px_per_mm/best_T.px_per_mm-1) > .03]
     margin = best_score-max(alternatives) if alternatives else best_score
 
     if corners_hint is None and (best_score < .10 or margin < .025 or
-            sum(v > .01 for k,v in best_parts.items() if k != 'total') < 2):
+            sum(best_parts[k] > .01 for k in ('uniformity','lowcontrast','wedge','linepairs')) < 2):
         raise ValueError('Phantom layout could not be verified; place the corners manually.')
     best_parts = {**best_parts, 'orientation_margin': float(margin),
-                  'method': 'square_structural_model' if corners_hint is None else 'manual_corners'}
+                  'method': best_parts.get('method', 'square_structural_model') if corners_hint is None else 'manual_corners'}
 
     landmarks, rms = verify_landmarks(pixels, best_T, pdef)
 
