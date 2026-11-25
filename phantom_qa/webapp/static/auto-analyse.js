@@ -283,6 +283,11 @@
           .forEach(([key, value]) => node.setAttribute(key, value));
         const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
         title.textContent = `${check.label}: ${check.state === "pass" ? "PASS" : "Attention required"}`;
+        const side = roiId.startsWith("geometry/field/") ? roiId.split("/")[2]
+          : roiId.startsWith("field/") ? roiId.split("/")[1] : null;
+        const measurement = record.results?.geometry?.field_alignment?.[side];
+        if (measurement?.intrusion_upper_mm != null)
+          title.textContent += `; inward intrusion ${fieldDistance(measurement)} mm`;
         node.append(title); svg.append(node);
       };
       let rois = feature.id === "linepairs" && record.geometry

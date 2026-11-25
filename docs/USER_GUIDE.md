@@ -14,10 +14,18 @@ which is entered at the moment of the action rather than at sign-in.
 
 For consistent field-alignment measurements, use the same SID and acquisition
 processing, center the phantom, and retain a visible collimation boundary on
-every side. The reference field is 322 × 322 mm, about 11 mm beyond each side of
-the approximately 300 mm phantom. Keep several millimetres of native image on
-both sides of the boundary; avoid cropped exports and display screenshots.
+every side. The physical edges of the approximately 300 mm phantom are the
+reference. The program walks inward through the ruler marks to find where
+contrast becomes reliably visible. Avoid cropped exports and display screenshots.
 Use original DICOM files so padding and acquisition metadata are preserved.
+
+Results show an interval or upper bound, not an exact automatic field edge.
+All marks clearly visible normally means intrusion is at most about 11 mm,
+including a 1 mm localization allowance. Equal weak contrast is inconclusive.
+The tolerance remains 2% of SID (20 mm at 1000 mm SID). All four sides must
+have bounds within tolerance to pass; a bound crossing the limit warns, and a
+lower bound exceeding it fails. This detects inward clipping; it does not measure
+outward overextension or establish full light-field congruence.
 
 An unavailable edge is not an alignment failure. Correct registration and ruler
 positions first when scale is unreliable. Place an edge manually only where it

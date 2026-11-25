@@ -101,6 +101,7 @@ class ZeroFieldEdgeTests(unittest.TestCase):
 
     def test_patterns_proposal_contains_all_four_automatic_markers(self):
         ctx = zero_field(offset=-18)
+        ctx.pdef.tolerances.pop("field_reference", None)  # Legacy outward detector.
         with patch.object(geometry, "_ruler_probe", wraps=geometry._ruler_probe) as rulers:
             proposal = geometry.propose(ctx)
         self.assertEqual(rulers.call_count, 4)

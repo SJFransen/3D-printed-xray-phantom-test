@@ -200,8 +200,10 @@ def _assess_features(geometry, results, pdef, tests):
                 measured = (result.get("rulers") or {}).get(side) or {}
                 if measured.get("detected") is not True or measured.get("reliable") is not True:
                     issue("invalid_result", f"rulers.{side}", "Ruler could not be measured reliably")
-                numeric(measured, ["pitch_mm", "pitch_dev_pct", "central_line_from_edge_mm",
-                                   "linearity_rms_mm"], f"rulers.{side}")
+                ruler_metrics = ["pitch_mm", "pitch_dev_pct", "linearity_rms_mm"]
+                if result.get("field_reference") != "phantom_edge_inward":
+                    ruler_metrics.append("central_line_from_edge_mm")
+                numeric(measured, ruler_metrics, f"rulers.{side}")
                 edge = (geom.get("field_edges") or {}).get(side) or {}
                 if position(edge, f"field_edges.{side}"):
                     overlay({"type": "point", "center_px": edge.get("edge_pt_px"),
@@ -209,9 +211,12 @@ def _assess_features(geometry, results, pdef, tests):
                 alignment = (result.get("field_alignment") or {}).get(side) or {}
                 if alignment.get("detected") is not True or "status" not in alignment:
                     issue("missing_result", f"field_alignment.{side}", "Field alignment could not be measured")
-                deviation = ("deviation_from_reference_mm" if result.get("field_reference_width_mm") is not None
+                deviation = ("intrusion_upper_mm" if result.get("field_reference") == "phantom_edge_inward" else
+                             "deviation_from_reference_mm" if result.get("field_reference_width_mm") is not None
                              else "deviation_from_central_line_mm")
                 numeric(alignment, ["pct_of_sid", deviation], f"field_alignment.{side}")
+                if result.get("field_reference") == "phantom_edge_inward":
+                    numeric(alignment, ["intrusion_lower_mm"], f"field_alignment.{side}")
         else:
             if "status" not in result:
                 issue("missing_result", "status", "Required group verdict is missing")
@@ -292,9 +297,14 @@ def geometry_checks(result):
     alignment = alignment if isinstance(alignment, dict) else {}
     alignment = [row for row in alignment.values()
                  if isinstance(row, dict) and row.get("detected") is True]
-    deviation = "deviation_from_reference_mm" if result.get("field_reference_width_mm") is not None else "deviation_from_central_line_mm"
+    deviation = ("intrusion_upper_mm" if result.get("field_reference") == "phantom_edge_inward" else
+                 "deviation_from_reference_mm" if result.get("field_reference_width_mm") is not None else "deviation_from_central_line_mm")
     field_valid = bool(alignment) and all(_finite(row.get("pct_of_sid")) and _finite(row.get(deviation))
                                         and row.get("status") == "pass" for row in alignment)
+    if result.get("field_reference") == "phantom_edge_inward":
+        field_valid = field_valid and len(alignment) == 4 and all(
+            _finite(row.get("intrusion_lower_mm")) and 0 <= row["intrusion_lower_mm"] <= row["intrusion_upper_mm"]
+            for row in alignment)
     checks = []
     for key, label, status, valid in (
         ("geometry", "Geometry", result.get("dimension_status", "n/a"), dimension_valid),

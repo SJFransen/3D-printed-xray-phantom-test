@@ -373,7 +373,17 @@ def _field_edge_step(ctx: Ctx, side: str, start_mm: float = 2.0, tangent_mm: flo
 
 def propose(ctx: Ctx) -> dict:
     rulers = {side: _ruler_probe(ctx, side) for side in SIDES}
-    fields = {side: _field_edge(ctx, side, ruler=rulers[side]) for side in SIDES}
+    if ctx.pdef.tolerances.get("field_reference") == "phantom_edge_inward":
+        from .field_intrusion import measure
+        fields = {side: measure(ctx, side, rulers[side]) for side in SIDES}
+        for side, field in fields.items():
+            visible = [m for m in field["ruler_visibility"] if m["visible"]]
+            # A clipped outer mark is not a missing scale mark to synthesize.
+            rulers[side].update(detected=len(visible) >= 3,
+                                line_indices=[m["index"] for m in visible],
+                                line_offsets_mm=[m["measured_depth_mm"] for m in visible])
+    else:
+        fields = {side: _field_edge(ctx, side, ruler=rulers[side]) for side in SIDES}
     corners = {}
     if ctx.reg is not None and not ctx.reg.score.get('inferred_outer_box'):
         S2 = ctx.pdef.side_mm / 2.0
@@ -400,11 +410,11 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     pitches = []
     central_from_edge = {}
     for side, r in geometry["rulers"].items():
-        if not r.get("detected") or len(r.get("line_offsets_mm", [])) < 6:
+        if not r.get("detected") or len(r.get("line_offsets_mm", [])) < (3 if "line_indices" in r else 6):
             ruler_rows[side] = {"detected": False}
             continue
         off = np.asarray(r["line_offsets_mm"], float)
-        idx = np.arange(len(off))
+        idx = np.asarray(r.get("line_indices", np.arange(len(off))), float)
         A = np.vstack([idx, np.ones_like(idx, dtype=float)]).T
         coef, *_ = np.linalg.lstsq(A, off, rcond=None)
         pitch = float(coef[0])
@@ -417,14 +427,16 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         reliable = rms <= ruler_rms_max
         if reliable:
             pitches.append(pitch)
-        central_from_edge[side] = float(off[central_idx])
+        central = float(off[np.flatnonzero(idx == central_idx)[0]]) if np.any(idx == central_idx) else None
+        if central is not None:
+            central_from_edge[side] = central
         ruler_rows[side] = {
             "detected": True,
             "reliable": bool(reliable),
             "line_offsets_mm": off.tolist(),
             "pitch_mm": pitch,
             "first_line_from_edge_mm": float(off[0]),
-            "central_line_from_edge_mm": float(off[central_idx]),
+            "central_line_from_edge_mm": central,
             "linearity_residuals_mm": resid.tolist(),
             "linearity_rms_mm": rms,
             "nominal_pitch_mm": nominal_pitch,
@@ -527,6 +539,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     # Field-edge offsets use the definition's outer edge in the transform frame.
     # Convert that frame to absolute mm before comparing with the centered field.
     reference_width = tol.get("field_reference_width_mm")
+    inward_mode = tol.get("field_reference") == "phantom_edge_inward"
     expected_offset = ((float(reference_width) - pdef.side_mm * k) / 2.0
                        if reference_width is not None else None)
     reference_label = (f"the centered {reference_width:g} mm field boundary"
@@ -535,6 +548,38 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     worst_pct = 0.0
     any_field = False
     for side, f in geometry["field_edges"].items():
+        if inward_mode:
+            from .field_intrusion import measure
+            if not f.get("manual") and f.get("method") != "inward_ruler_contrast":
+                f = measure(ctx, side, geometry["rulers"].get(side) or {})
+            if not f.get("detected"):
+                field_rows[side] = {"detected": False, "reason": f.get("reason", "Ruler coverage unavailable")}
+                continue
+            bounds = f.get("intrusion_bounds_mm")
+            if f.get("manual"):
+                depth = max(0., -float(f["offset_from_edge_mm"]))
+                bounds = [depth, depth]
+            try:
+                lower, upper = (float(v) * k for v in bounds)
+                valid_bounds = np.isfinite(lower) and np.isfinite(upper) and 0 <= lower <= upper
+            except (TypeError, ValueError, OverflowError):
+                valid_bounds = False
+            if not valid_bounds:
+                field_rows[side] = {"detected": False, "reason": "Invalid or missing inward intrusion bounds"}
+                continue
+            limit = sid_mm * tol.get("field_pct_sid", 2.) / 100
+            state = "fail" if lower > limit else "pass" if upper <= limit else "warn"
+            field_rows[side] = {
+                "detected": True, "intrusion_lower_mm": lower, "intrusion_upper_mm": upper,
+                "measurement_kind": "exact" if f.get("manual") else f.get("measurement_kind", "interval"),
+                "pct_of_sid": 100 * upper / sid_mm, "tolerance_mm": limit,
+                "status": state, "edge_pt_px": f.get("edge_pt_px"),
+                "offset_from_phantom_edge_mm": float(f["offset_from_edge_mm"]) * k if f.get("manual") else None,
+                "ruler_visibility": f.get("ruler_visibility", []),
+            }
+            any_field = True
+            worst_pct = max(worst_pct, 100 * upper / sid_mm)
+            continue
         if not f.get("detected"):
             field_rows[side] = {"detected": False,
                                 "reason": f.get("reason", "not detected")}
@@ -567,6 +612,10 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     if any_field:
         field_status = ("pass" if worst_pct <= tol.get("field_pct_sid", 2.0)
                         else "fail")
+    if inward_mode:
+        states = [row.get("status") for row in field_rows.values()]
+        field_status = ("fail" if "fail" in states else "warn" if "warn" in states else
+                        "pass" if all(field_rows.get(s, {}).get("status") == "pass" for s in SIDES) else "n/a")
 
     dim_reasons = []
     if dims:
@@ -615,7 +664,22 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
             f"(absolute scale {ctx.T.mm_per_px * k:.5f} mm/px).")
 
     field_reasons = []
-    if not any_field:
+    if inward_mode:
+        for side in SIDES:
+            row = field_rows.get(side) or {}
+            if not row.get("detected"):
+                field_reasons.append(f"{side}: coverage not measurable — {row.get('reason', 'no result')}")
+                continue
+            lower, upper = row["intrusion_lower_mm"], row["intrusion_upper_mm"]
+            measurement = (f"at most {upper:.1f} mm" if row["measurement_kind"] == "upper_bound"
+                           else f"{lower:.1f}–{upper:.1f} mm")
+            field_reasons.append(f"{side}: inward intrusion {measurement} from the phantom edge; "
+                                 f"limit {row['tolerance_mm']:.1f} mm ({tol.get('field_pct_sid', 2):g}% of SID), {row['status']}.")
+        if field_status == "n/a":
+            field_reasons.append("All four sides need conclusive coverage before alignment can pass.")
+        elif field_status == "warn":
+            field_reasons.append("An intrusion interval crosses the tolerance; its available ruler marks cannot establish pass or fail.")
+    elif not any_field:
         why = {side: f.get("reason") for side, f in field_rows.items()
                if f.get("reason")}
         field_reasons.append(
@@ -644,6 +708,8 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         "scale": scale,
         "field_alignment": field_rows, "field_status": field_status,
         "field_reasons": field_reasons,
+        **({"field_reference": "phantom_edge_inward", "field_tolerance_pct_sid": tol.get("field_pct_sid", 2.)}
+           if inward_mode else {}),
         **({"field_reference_width_mm": float(reference_width)}
            if reference_width is not None else {}),
         "sid_mm": sid_mm,

@@ -249,14 +249,15 @@ def _geometry_section(res, bmap):
         for side, r in (g.get("rulers") or {}).items())
     fields = "".join(
         (f"<tr><td>{side}</td><td class='num'>"
-         f"{_num(f.get('deviation_from_reference_mm', f.get('deviation_from_central_line_mm')), 1)}</td>"
+         f"{_field_distance(f)}</td>"
          f"<td class='num'>{_num(f.get('pct_of_sid'), 2)}%</td>"
          f"<td>{_chip(f.get('status'))}</td></tr>") if f.get("detected") else
         (f"<tr><td>{side}</td><td colspan='3' class='muted'>not measurable — "
          f"{html.escape(str(f.get('reason', '')))}</td></tr>")
         for side, f in (g.get("field_alignment") or {}).items())
 
-    field_reference = (f"centered {_num(g['field_reference_width_mm'], 0)} mm field boundary"
+    field_reference = ("phantom edge (measured inwards)" if g.get("field_reference") == "phantom_edge_inward" else
+                       f"centered {_num(g['field_reference_width_mm'], 0)} mm field boundary"
                        if g.get("field_reference_width_mm") is not None else "central long lines")
     body = f"""
 <h3>Corner-mark dimensions</h3>
@@ -278,9 +279,20 @@ def _geometry_section(res, bmap):
     <td class='num'>{_num(sc.get('implied_magnification_vs_detector_plane'), 4)}</td><td>×</td></tr>
 </table>
 <h3>X-ray field vs {field_reference} {_chip(_geometry_status(g, 'field_status'))}</h3>
-<table><tr><th>side</th><th>deviation [mm]</th><th>% of SID</th><th></th></tr>{fields}</table>"""
+<table><tr><th>side</th><th>{'inward intrusion [mm]' if g.get('field_reference') == 'phantom_edge_inward' else 'deviation [mm]'}</th><th>{'upper % of SID' if g.get('field_reference') == 'phantom_edge_inward' else '% of SID'}</th><th></th></tr>{fields}</table>"""
     return _section("Geometry & dimensions", _geometry_status(g, "dimension_status"),
                     _analysis_notes(g) + body)
+
+
+def _field_distance(field):
+    if field.get("intrusion_upper_mm") is not None:
+        upper = _num(field["intrusion_upper_mm"], 1)
+        if field.get("measurement_kind") == "upper_bound":
+            return "≤" + upper
+        if field.get("measurement_kind") == "exact":
+            return upper
+        return _num(field.get("intrusion_lower_mm"), 1) + "–" + upper
+    return _num(field.get("deviation_from_reference_mm", field.get("deviation_from_central_line_mm")), 1)
 
 
 def _not_analysed(title: str, res: dict, key: str) -> str:

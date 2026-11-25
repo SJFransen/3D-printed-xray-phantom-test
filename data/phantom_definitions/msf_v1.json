@@ -302,7 +302,7 @@
   },
   "tolerances": {
     "field_pct_sid": 2.0,
-    "field_reference_width_mm": 322.0,
+    "field_reference": "phantom_edge_inward",
     "uniformity_dsnr_pct": 20.0,
     "wedge_r2_min": 0.85,
     "dim_dev_pct": 1.0,

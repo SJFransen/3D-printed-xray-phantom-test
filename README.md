@@ -15,7 +15,7 @@ guide*:
 | Low contrast | CNR for each of 8 circles |
 | Uniformity | SNR per square and ΔSNR against the scan's own mean |
 | Dynamic range | Mean per wedge step, monotonicity and dynamic-range ratio |
-| X-ray / light field alignment | Field-edge deviation from a centered 322 mm field boundary, in mm and % of SID |
+| X-ray field coverage | Inward intrusion from each phantom edge, bounded by ruler contrast, in mm and % of SID |
 | Dimensions | Corner-mark distances and side-ruler pitch |
 
 **No material assumptions are made.** Wedge steps and low-contrast circles are

@@ -304,6 +304,7 @@ function activeRois() {
     });
     Object.values(g.geometry.field_edges || {}).forEach(f => {
       if (f.probe) out.push({ roi: f.probe, test: "geometry", dash: [6, 4] });
+      if (f.intrusion_segment) out.push({ roi: f.intrusion_segment, test: "geometry", dash: [2, 2] });
     });
   }
   return out;
@@ -361,7 +362,9 @@ function draw() {
           ctx2d.stroke();
         }
         ctx2d.font = "11px Segoe UI"; ctx2d.fillStyle = COLORS.geometry;
-        ctx2d.fillText(`field ${side}${f.manual ? " (manual)" : ""}`,
+        const bounds = f.intrusion_bounds_mm;
+        const boundLabel = bounds ? ` (${bounds[0] === 0 ? "≤" : fmt(bounds[0], 1) + "–"}${fmt(bounds[1], 1)} mm bound)` : "";
+        ctx2d.fillText(`field ${side}${f.manual ? " (manual)" : boundLabel}`,
                        c[0] + 12, c[1] + 4);
       }
     });
@@ -1491,7 +1494,9 @@ function stageB(c) {
           r.detected ? `${r.line_offsets_mm.length} lines` : ""));
     Object.entries(g.geometry.field_edges).forEach(([side, f]) =>
       add("geometry", `field edge ${side}`, f.detected,
-          f.detected ? `${fmt(Math.abs(f.offset_from_edge_mm), 1)} mm ${f.offset_from_edge_mm < 0 ? "inside" : "outside"}`
+          f.detected ? (f.intrusion_bounds_mm
+            ? `${fmt(f.intrusion_bounds_mm[0], 1)}–${fmt(f.intrusion_bounds_mm[1], 1)} mm inward (bounds)`
+            : `${fmt(Math.abs(f.offset_from_edge_mm), 1)} mm ${f.offset_from_edge_mm < 0 ? "inside" : "outside"}`)
                      : `<span class="hint">${f.reason || "no edge"} — place manually in Stage C if visible</span>`,
           "not detected"));
   }
@@ -1847,7 +1852,7 @@ async function stageD(c) {
   const spac = sc.dicom_spacings_mm_per_px || {};
   const fieldRows = Object.entries(gr.field_alignment || {}).map(([side, f]) =>
     f.detected ?
-    `<tr><td>${side}</td><td class="num">${fmt(f.deviation_from_reference_mm ?? f.deviation_from_central_line_mm, 1)}</td>
+    `<tr><td>${side}</td><td class="num">${fieldDistance(f)}</td>
      <td class="num">${fmt(f.pct_of_sid, 2)} %</td><td>${chip(f.status)}</td></tr>` :
     `<tr><td>${side}</td><td colspan="3" class="hint">not measured — ${f.reason || "no edge found"}</td></tr>`).join("");
   const worstDim = d.dev_from_nominal_pct;
@@ -1899,7 +1904,7 @@ async function stageD(c) {
              <td class="num">${fmt(sc.implied_magnification_vs_detector_plane, 4)}</td></tr>
        </table>
        <h3>X-ray field vs ${fieldReference(gr)} ${chip(gr.field_status)}</h3>
-       <table><tr><th>side</th><th>deviation [mm]</th><th>% of SID</th><th></th></tr>
+       <table><tr><th>side</th><th>${gr.field_reference === "phantom_edge_inward" ? "inward intrusion [mm]" : "deviation [mm]"}</th><th>${gr.field_reference === "phantom_edge_inward" ? "upper % of SID" : "% of SID"}</th><th></th></tr>
        ${fieldRows}</table>`)}
 
     <button class="primary" id="btn-confirm-d">Dimensions verified ✓ — run analysis</button>`;
@@ -1918,8 +1923,18 @@ async function stageD(c) {
 
 /* The field-alignment headline: the worst side, or why there is none. */
 function fieldReference(gr) {
+  if (gr.field_reference === "phantom_edge_inward") return "phantom edge (measured inwards)";
   return gr.field_reference_width_mm != null
     ? `centered ${fmt(gr.field_reference_width_mm, 0)} mm field boundary` : "central lines";
+}
+
+function fieldDistance(field) {
+  if (Number.isFinite(field.intrusion_upper_mm)) {
+    if (field.measurement_kind === "upper_bound") return `≤${fmt(field.intrusion_upper_mm, 1)}`;
+    if (field.measurement_kind === "exact") return fmt(field.intrusion_upper_mm, 1);
+    return `${fmt(field.intrusion_lower_mm, 1)}–${fmt(field.intrusion_upper_mm, 1)}`;
+  }
+  return fmt(field.deviation_from_reference_mm ?? field.deviation_from_central_line_mm, 1);
 }
 
 function fieldSummary(gr) {
@@ -1932,8 +1947,8 @@ function fieldSummary(gr) {
     if (Math.abs(s[1].pct_of_sid) > Math.abs(worst[1].pct_of_sid)) worst = s;
   });
   return `worst side ${worst[0]}, `
-       + `${fmt(worst[1].deviation_from_reference_mm ?? worst[1].deviation_from_central_line_mm, 1)} mm from ${fieldReference(gr)} `
-       + `(${fmt(worst[1].pct_of_sid, 2)} % of SID)`
+       + `${fieldDistance(worst[1])} mm from ${fieldReference(gr)} `
+       + `(${gr.field_reference === "phantom_edge_inward" ? "upper bound " : ""}${fmt(worst[1].pct_of_sid, 2)} % of SID)`
        + (measured.length < sides.length
           ? ` · ${sides.length - measured.length} side(s) not measurable` : "");
 }
@@ -1991,13 +2006,16 @@ async function stageE(c) {
     if (geometryCheck && status === "pass") {
       const d = result.dimensions || {};
       const sides = Object.values(result.field_alignment || {}).filter(row => row?.detected === true);
-      const deviation = result.field_reference_width_mm != null
+      const deviation = result.field_reference === "phantom_edge_inward" ? "intrusion_upper_mm" : result.field_reference_width_mm != null
         ? "deviation_from_reference_mm" : "deviation_from_central_line_mm";
       const valid = key === "geometry"
         ? Number.isFinite(d.mean_side_mm) && Number.isFinite(d.dev_from_nominal_pct)
-        : sides.length > 0 && sides.every(row => row.status === "pass"
+        : (result.field_reference === "phantom_edge_inward" ? sides.length === 4 : sides.length > 0) && sides.every(row => row.status === "pass"
           && Number.isFinite(row.pct_of_sid) && Number.isFinite(row[deviation]));
-      if (!valid || result.error) status = "error";
+      const validBounds = result.field_reference !== "phantom_edge_inward" || key === "geometry"
+        || sides.every(row => Number.isFinite(row.intrusion_lower_mm)
+          && row.intrusion_lower_mm >= 0 && row.intrusion_lower_mm <= row.intrusion_upper_mm);
+      if (!valid || !validBounds || result.error) status = "error";
     }
     if (result.status === "error" && result.analysis_issues) {
       const details = result.analysis_issues.map(i => `${i.path}: ${i.detail}`);

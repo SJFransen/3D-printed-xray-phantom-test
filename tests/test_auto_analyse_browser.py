@@ -434,6 +434,32 @@ def test_browser_failed_alignment_does_not_change_dimension_pass(browser_page, p
     assert not errors
 
 
+def test_browser_inward_intrusion_bounds_and_reference(browser_page, passing):
+    page, errors = browser_page
+    result = passing[1]["geometry"]
+    result.update(field_reference="phantom_edge_inward", field_status="fail",
+                  field_reasons=["left: inward intrusion 29–36 mm from the phantom edge; limit 20 mm (2% of SID), fail."])
+    for side, row in result["field_alignment"].items():
+        row.update(intrusion_lower_mm=0., intrusion_upper_mm=11., measurement_kind="upper_bound", pct_of_sid=1.1)
+    result["field_alignment"]["left"].update(intrusion_lower_mm=29., intrusion_upper_mm=36.,
+        measurement_kind="interval", pct_of_sid=3.6, status="fail")
+    send_scan(page)
+    assert page.locator('#auto-feature-status li[aria-label="X-ray field alignment: Attention"]').count() == 1
+    assert "29.0–36.0" in page.locator('#auto-overlays [data-roi-id="geometry/field/left"] title').text_content()
+    page.locator("#auto-open-analyze").click()
+    page.locator("#btn-confirm-e").wait_for(state="visible")
+    assert "29.0–36.0 mm from phantom edge (measured inwards)" in page.locator("#stage-content").inner_text()
+    assert "322" not in page.locator("#stage-content").inner_text()
+    preview = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
+    preview.mkdir(exist_ok=True)
+    for width in (1280, 360):
+        page.set_viewport_size({"width":width,"height":900})
+        page.get_by_text("X-ray field alignment", exact=False).last.scroll_into_view_if_needed()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.screenshot(path=str(preview / f"inward-intrusion-{width}.png"), full_page=True)
+    assert not errors
+
+
 def test_browser_geometry_primary_causes_and_expandable_details(browser_page, passing):
     page, errors = browser_page
     geometry, results = passing
@@ -591,7 +617,7 @@ def test_browser_metadata_field_correction_and_saved_revisions(browser_page, mod
     held = []
     page.route("**/field_edge", lambda route: held.append(route))
     page.locator('.btn-field[data-side="top"]').click()
-    point = alignment_case.mm_to_px([0., pdef.side_mm / 2 + 40]).tolist()
+    point = alignment_case.mm_to_px([0., pdef.side_mm / 2 - 40]).tolist()
     position = page.evaluate("point => nat2scr(point)", point)
     canvas = page.locator("#viewer").bounding_box()
     page.mouse.click(canvas["x"] + position[0], canvas["y"] + position[1])
@@ -605,10 +631,10 @@ def test_browser_metadata_field_correction_and_saved_revisions(browser_page, mod
     page.locator("#btn-confirm-e").wait_for(state="visible")
     stored = mod.store.get(aid)
     clicked_offset = stored["geometry"]["geometry"]["field_edges"]["top"]["offset_from_edge_mm"]
-    assert clicked_offset == pytest.approx(40, abs=.5)  # screen clicks have finite pixel precision
+    assert clicked_offset == pytest.approx(-40, abs=.5)  # screen clicks have finite pixel precision
     assert stored["results"]["geometry"]["field_alignment"]["top"]["offset_from_phantom_edge_mm"] == pytest.approx(clicked_offset)
-    assert stored["results"]["geometry"]["field_reference_width_mm"] == 322.0
-    assert "centered 322 mm field boundary" in page.locator("#stage-content").inner_text()
+    assert stored["results"]["geometry"]["field_reference"] == "phantom_edge_inward"
+    assert "phantom edge (measured inwards)" in page.locator("#stage-content").inner_text()
     preview = Path(__file__).resolve().parents[1] / ".venv" / "qa-preview"
     preview.mkdir(exist_ok=True)
     for width in (1280, 360):

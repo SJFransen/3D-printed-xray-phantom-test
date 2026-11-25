@@ -144,7 +144,34 @@ fallback scale remains explicitly indicative, never a reliable measurement.
 sides and both diagonals, against the assumed nominal side of 300.0 mm; plus
 central-line separations (nominal 260.0 mm = side − 2 × 20 mm).
 
-**Field alignment.** During pattern initialisation, each blue ruler probe also
+**Field intrusion (version 1.6.0 onward).** The reference is each physical phantom
+edge. Five parallel profiles at 0, ±1 and ±2 mm walk inward through the six expected
+ruler marks at 10–35 mm depth. Each mark is compared with neighboring material on
+both sides; monotonic exposure transitions do not count as a line. Visibility
+requires at least three profiles with CNR ≥5, contrast ≥1% of native image range,
+and contrast ≥35% of the strongest supported mark on that ruler. Declared padding
+and points outside the detector are excluded. Equal low contrast never proves
+coverage; visibility must remain sustained for all remaining inner marks.
+
+The last obscured and first visible marks bound intrusion, with a 1 mm allowance
+on each end. If every mark is visible, the result is an upper bound (normally
+≤11 mm), not exact zero. Partially visible rulers contribute scale only when at
+least three visible marks can be measured; original mark indices are retained.
+No missing mark is synthesized. The existing ruler-scale consistency gate applies.
+
+Bounds use the ruler-corrected millimetre scale. The retained tolerance is 2% of
+SID, explicitly reported in mm. A lower bound above the limit fails; an interval
+crossing it warns. PASS requires all four sides to have upper bounds within the
+limit. Missing coverage is not measurable. Manual edge placements yield a single
+inward distance (outward placements have zero inward intrusion). This is a coverage
+test; outward field overextension cannot be established from ruler visibility.
+The image `000036` is a regression: the displayed lower side loses the first five
+marks and recovers the innermost, giving about 29–36 mm intrusion and a failure
+at 1000 mm SID. Synthetic cases cover all-visible, all-weak, interval ambiguity,
+rotation and mirroring. The 1 mm allowance and visibility thresholds remain
+engineering defaults requiring broader multi-device validation.
+
+**Legacy outward detectors (versions before 1.6.0).** During pattern initialisation, each blue ruler probe also
 sets the starting line for a field-edge search. From the probe's inner end, the
 search walks outward through actual image pixels to the first zero-valued
 boundary. At least three zero samples spanning 1.5 mm confirm a candidate, with
@@ -178,7 +205,7 @@ an isolated artifact. The result records the method, agreeing-profile count,
 line slope, residual spread and a confidence score (not a probability).
 
 Otherwise the side is reported not detected, with a reason, and manual placement
-is requested. The MSF definition uses a centered 322 × 322 mm field as the
+is requested. The former MSF definition used a centered 322 × 322 mm field as the
 reference. Each expected boundary is 161 mm from the phantom center. Deviation
 is the signed distance from the measured field edge to that boundary (positive
 outward), in absolute millimetres and as a percentage of SID (tolerance ±2 %).

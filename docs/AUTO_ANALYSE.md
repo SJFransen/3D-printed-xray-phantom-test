@@ -73,12 +73,20 @@ view changes no geometry, measurements, profile defaults or revisions.
 
 ## Shared results and the line-pair correction
 
+Version 1.6.0 replaces the 322 mm reference with the physical phantom edges.
+Automatic field measurements walk inward through ruler contrast and return
+intrusion intervals or upper bounds. All four sides need conclusive passing
+bounds before the alignment overview passes. Confirmed inward clipping can fail
+even when another side is unavailable. Technical scale warnings remain separate
+from QA verdicts. Historical results keep their original reference until the
+operator explicitly re-detects/recomputes an unsigned scan.
+
 Version 1.5.0 adds detection near the 322 mm reference, agreement across five
 profiles, padding-aware zero-boundary validation, and ruler-pattern/scale
 consistency checks. Technical diagnostics retain all raw issues while presenting
 primary causes first. Existing saved and signed-off results are not rewritten.
 
-Alignment calculations from version 1.4.1 use a centered 322 × 322 mm field
+Alignment calculations in versions 1.4.1–1.5.0 used a centered 322 × 322 mm field
 boundary for the MSF definition. The per-side deviation uses the ruler-corrected
 absolute scale and retains the ±2% SID tolerance. Analyze and reports label the
 reference explicitly. Saved results keep their original reference until an
